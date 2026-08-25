@@ -19,10 +19,13 @@ from .reader import PortEvent, PortSettings, SerialReader
 class PortView(Static):
     """The independently pausable visual panel for one serial port."""
 
+    can_focus = True
+
     def __init__(self, port: str) -> None:
         super().__init__(classes="port-panel")
         self.port = port
         self.paused = False
+        self.zoomed = False
 
     def compose(self) -> ComposeResult:
         yield Label(self.port, classes="port-title")
@@ -30,8 +33,20 @@ class PortView(Static):
 
     def set_paused(self, paused: bool) -> None:
         self.paused = paused
-        suffix = " [PAUSED]" if paused else ""
-        self.query_one(Label).update(f"{self.port}{suffix}")
+        self._update_title()
+
+    def set_zoomed(self, zoomed: bool) -> None:
+        self.zoomed = zoomed
+        self.set_class(zoomed, "zoomed")
+        self._update_title()
+
+    def on_focus(self) -> None:
+        if isinstance(self.app, TerminalApp):
+            self.app.select_port(self.port)
+
+    def _update_title(self) -> None:
+        suffixes = ["[ZOOMED]" if self.zoomed else "", "[PAUSED]" if self.paused else ""]
+        self.query_one(Label).update(" ".join(part for part in [self.port, *suffixes] if part))
 
     def write_event(self, event: PortEvent) -> None:
         self.query_one(RichLog).write(render_record(event.timestamp, event.port, event.text))
@@ -43,6 +58,9 @@ class TerminalApp(App[None]):
     CSS = """
     #panels { height: 1fr; layout: horizontal; }
     .port-panel { width: 1fr; height: 1fr; border: round $accent; }
+    .port-panel:focus { border: heavy $success; }
+    #panels.zoomed .port-panel { display: none; }
+    #panels.zoomed .port-panel.zoomed { display: block; width: 1fr; border: heavy $warning; }
     .port-title { text-style: bold; padding: 0 1; }
     RichLog { height: 1fr; }
     #filter { dock: bottom; display: none; }
@@ -54,6 +72,7 @@ class TerminalApp(App[None]):
         Binding("p", "toggle_port_pause", "Pause port"),
         Binding("f", "edit_global_filter", "Global filter"),
         Binding("F", "edit_port_filter", "Port filter"),
+        Binding("z", "toggle_zoom", "Zoom port"),
         Binding("escape", "cancel_filter", "Cancel filter"),
         Binding("q", "quit", "Quit"),
     ]
@@ -73,6 +92,7 @@ class TerminalApp(App[None]):
         self.global_filter: LineFilter | None = None
         self.port_filters: dict[str, LineFilter | None] = {port: None for port in ports}
         self.filter_target: str | None = None
+        self.zoomed_port: str | None = None
         self.readers: list[SerialReader] = []
 
     def compose(self) -> ComposeResult:
@@ -81,10 +101,11 @@ class TerminalApp(App[None]):
             for port in self.ports:
                 yield PortView(port)
         yield Input(placeholder="Filter text, or /regex/", id="filter")
-        yield Label("Ready. 1-9 selects a port.", id="status")
+        yield Label("Ready. Focus a port with Tab or 1-9.", id="status")
         yield Footer()
 
     def on_mount(self) -> None:
+        self._port_view(self.selected_port).focus()
         self.readers = [SerialReader(port, self.settings, self.log_dir, self._receive_from_reader) for port in self.ports]
         for reader in self.readers:
             reader.start()
@@ -110,9 +131,12 @@ class TerminalApp(App[None]):
         if event.key.isdigit() and event.key != "0":
             index = int(event.key) - 1
             if index < len(self.ports):
-                self.selected_port = self.ports[index]
-                self._status(f"Selected {self.selected_port}")
+                self._port_view(self.ports[index]).focus()
                 event.stop()
+
+    def select_port(self, port: str) -> None:
+        self.selected_port = port
+        self._status(f"Selected {port}")
 
     def action_toggle_global_pause(self) -> None:
         self.global_paused = not self.global_paused
@@ -122,6 +146,19 @@ class TerminalApp(App[None]):
         view = self._port_view(self.selected_port)
         view.set_paused(not view.paused)
         self._status(f"{self.selected_port} visual display {'paused' if view.paused else 'resumed'}; disk logging continues.")
+
+    def action_toggle_zoom(self) -> None:
+        panels = self.query_one("#panels", Horizontal)
+        if self.zoomed_port:
+            self._port_view(self.zoomed_port).set_zoomed(False)
+            panels.remove_class("zoomed")
+            self._status(f"Restored side-by-side layout from {self.zoomed_port}.")
+            self.zoomed_port = None
+            return
+        self.zoomed_port = self.selected_port
+        self._port_view(self.zoomed_port).set_zoomed(True)
+        panels.add_class("zoomed")
+        self._status(f"Zoomed {self.zoomed_port}. Press z or Escape to restore the layout.")
 
     def action_edit_global_filter(self) -> None:
         self._show_filter("global", self.global_filter.source if self.global_filter else "")
@@ -154,6 +191,10 @@ class TerminalApp(App[None]):
         self.action_cancel_filter()
 
     def action_cancel_filter(self) -> None:
+        if self.filter_target is None:
+            if self.zoomed_port:
+                self.action_toggle_zoom()
+            return
         self.filter_target = None
         input_ = self.query_one(Input)
         input_.remove_class("visible")

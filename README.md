@@ -17,11 +17,12 @@ Logs are written independently as `log_<sanitized-port>_<YYYYMMDD_HHMMSS>.log` i
 | --- | --- |
 | `Space` | Pause or resume all visual panels; disk logging continues. |
 | `p` | Pause or resume the selected port panel. |
-| `1`–`9` | Select a port panel. |
+| `Tab` / `1`–`9` | Focus and select a port panel. |
+| `z` | Zoom the focused port to fill the available terminal; press again to restore the side-by-side layout. |
 | `f` | Set or clear the global display filter. |
 | `Shift+f` | Set or clear the selected port filter. |
 | `Enter` | Apply the filter. Plain text is case-insensitive; `/pattern/` is a case-insensitive regex. |
-| `Escape` | Cancel filter editing. |
+| `Escape` | Cancel filter editing, or restore the side-by-side layout when a port is zoomed. |
 | `q` | Quit. |
 
 TX, RX, ACK, NACK, and common log levels are highlighted. Filters affect only new TUI lines, never the complete per-port log file.
