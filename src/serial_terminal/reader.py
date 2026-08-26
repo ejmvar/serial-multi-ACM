@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import threading
 
@@ -27,6 +27,7 @@ class PortEvent:
     kind: str
     timestamp: str
     text: str
+    tags: frozenset[str] = field(default_factory=frozenset)
 
 
 EventCallback = Callable[[PortEvent], None]

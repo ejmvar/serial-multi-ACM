@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 import re
 
@@ -10,11 +12,13 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.widgets import Footer, Header, Input, Label, RichLog, Static
+from textual.worker import Worker, WorkerState
 
 from .filters import LineFilter, is_visible
 from .formatting import render_record
 from .reader import PortEvent, PortSettings, SerialReader
 from .search import ContextBounds, SearchMatch, context_window, find_matches
+from .snapshots import SnapshotResult, save_tagged_snapshots
 
 
 class PortView(Static):
@@ -54,7 +58,11 @@ class PortView(Static):
         self.history.append(event)
         if len(self.history) > 5_000:
             del self.history[:-5_000]
-        self.query_one(RichLog).write(render_record(event.timestamp, event.port, event.text))
+        self.query_one(RichLog).write(render_record(event.timestamp, event.port, event.text, event.tags))
+
+    def replace_event(self, index: int, event: PortEvent) -> None:
+        """Replace one retained record after its user-assigned tags change."""
+        self.history[index] = event
 
     def show_context(self, timestamp: str, bounds: ContextBounds) -> None:
         """Replace the panel with retained lines surrounding *timestamp*."""
@@ -62,7 +70,7 @@ class PortView(Static):
         events, offset = context_window(self.history, timestamp, bounds)
         log.clear()
         for event in events:
-            log.write(render_record(event.timestamp, event.port, event.text))
+            log.write(render_record(event.timestamp, event.port, event.text, event.tags))
         log.scroll_to(y=offset, animate=False, force=True)
 
     def show_history(self) -> None:
@@ -70,7 +78,7 @@ class PortView(Static):
         log = self.query_one(RichLog)
         log.clear()
         for event in self.history:
-            log.write(render_record(event.timestamp, event.port, event.text))
+            log.write(render_record(event.timestamp, event.port, event.text, event.tags))
 
 
 class TerminalApp(App[None]):
@@ -96,6 +104,11 @@ class TerminalApp(App[None]):
         Binding("p", "edit_port_filter", "Port filter"),
         Binding("a", "edit_after_context", "After context"),
         Binding("b", "edit_before_context", "Before context"),
+        Binding("t", "start_numeric_tag", "Tag 1-9"),
+        Binding("T", "start_letter_tag", "Tag a-z"),
+        Binding("u", "start_numeric_untag", "Untag 1-9"),
+        Binding("U", "start_letter_untag", "Untag a-z"),
+        Binding("S", "save_tagged_snapshot", "Save tagged study"),
         Binding("z", "toggle_zoom", "Zoom port"),
         Binding("escape", "cancel_filter", "Cancel filter"),
         Binding("q", "quit", "Quit"),
@@ -123,6 +136,7 @@ class TerminalApp(App[None]):
         self.global_context = ContextBounds()
         self.port_contexts: dict[str, ContextBounds] = {port: ContextBounds() for port in ports}
         self.context_target: str | None = None
+        self.tag_mode: tuple[str, bool] | None = None
         self.readers: list[SerialReader] = []
 
     def compose(self) -> ComposeResult:
@@ -159,6 +173,16 @@ class TerminalApp(App[None]):
 
     def on_key(self, event) -> None:  # type: ignore[no-untyped-def]
         if self.filter_target is not None:
+            return
+        if self.tag_mode is not None:
+            kind, removing = self.tag_mode
+            valid = event.key in "123456789" if kind == "numeric" else len(event.key) == 1 and event.key.isascii() and event.key.islower()
+            if valid:
+                self._change_active_tag(event.key, removing)
+                event.stop()
+            else:
+                self._status(f"Waiting for a {'1-9' if kind == 'numeric' else 'lowercase a-z'} tag; Escape cancels.")
+                event.stop()
             return
         if event.key.isdigit() and event.key != "0":
             index = int(event.key) - 1
@@ -225,6 +249,77 @@ class TerminalApp(App[None]):
     def action_edit_before_context(self) -> None:
         self._activate_context("before")
 
+    def action_start_numeric_tag(self) -> None:
+        self._start_tag_mode("numeric", removing=False)
+
+    def action_start_letter_tag(self) -> None:
+        self._start_tag_mode("letter", removing=False)
+
+    def action_start_numeric_untag(self) -> None:
+        self._start_tag_mode("numeric", removing=True)
+
+    def action_start_letter_untag(self) -> None:
+        self._start_tag_mode("letter", removing=True)
+
+    def action_save_tagged_snapshot(self) -> None:
+        histories = {view.port: tuple(view.history) for view in self.query(PortView)}
+        self._status("Saving tagged retained-history snapshots in the background.")
+        self.run_worker(partial(save_tagged_snapshots, self.log_dir, histories), thread=True, name="tagged-snapshot")
+
+    def _active_event(self) -> tuple[PortView, int, PortEvent] | None:
+        if self.search_filter is not None:
+            if not self.search_matches:
+                return None
+            match = self.search_matches[self.search_index]
+            view = self._port_view(match.port)
+            return view, match.index, view.history[match.index]
+        view = self._port_view(self.selected_port)
+        if not view.history:
+            return None
+        index = len(view.history) - 1
+        return view, index, view.history[index]
+
+    def _start_tag_mode(self, kind: str, removing: bool) -> None:
+        if self._active_event() is None:
+            self._status("No active retained event: find a match or select a port with displayed history.")
+            return
+        self.tag_mode = (kind, removing)
+        verb = "remove" if removing else "assign"
+        choices = "1-9" if kind == "numeric" else "lowercase a-z"
+        self._status(f"Tag mode: press {choices} to {verb} that tag on the active event; Escape cancels.")
+
+    def _change_active_tag(self, tag: str, removing: bool) -> None:
+        active = self._active_event()
+        self.tag_mode = None
+        if active is None:
+            self._status("No active retained event; tag mode cancelled.")
+            return
+        view, index, record = active
+        tags = record.tags - {tag} if removing else record.tags | {tag}
+        if tags == record.tags:
+            self._status(f"#{tag} was already {'absent from' if removing else 'on'} the active event.")
+            return
+        view.replace_event(index, replace(record, tags=frozenset(tags)))
+        self._refresh_after_tag_change(view.port, index)
+        self._status(f"{'Removed' if removing else 'Assigned'} #{tag} on {view.port} at {record.timestamp}.")
+
+    def _refresh_after_tag_change(self, port: str, index: int) -> None:
+        if self.search_filter is None:
+            self._port_view(port).show_history()
+            return
+        self.search_matches = find_matches({view.port: view.history for view in self.query(PortView)}, self.search_filter)
+        for match_index, match in enumerate(self.search_matches):
+            if (match.port, match.index) == (port, index):
+                self.search_index = match_index
+                self._show_search_result()
+                return
+        if self.search_matches:
+            self.search_index = min(self.search_index, len(self.search_matches) - 1)
+            self._show_search_result()
+        else:
+            for view in self.query(PortView):
+                view.show_history()
+
     def _show_filter(self, target: str, value: str) -> None:
         self.filter_target = target
         input_ = self.query_one(Input)
@@ -261,6 +356,10 @@ class TerminalApp(App[None]):
         self.action_cancel_filter()
 
     def action_cancel_filter(self) -> None:
+        if self.tag_mode is not None:
+            self.tag_mode = None
+            self._status("Tag mode cancelled.")
+            return
         if self.context_target:
             self.context_target = None
             self._status("Context adjustment off. j/k navigate search results.")
@@ -312,6 +411,18 @@ class TerminalApp(App[None]):
 
     def _status(self, text: str) -> None:
         self.query_one("#status", Label).update(text)
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.worker.name != "tagged-snapshot":
+            return
+        if event.state == WorkerState.SUCCESS:
+            result = event.worker.result
+            assert isinstance(result, SnapshotResult)
+            saved = ", ".join(f"{path} ({count} events)" for path, count in result.written) or "none"
+            errors = "; ".join(result.errors)
+            self._status(f"Tagged snapshots saved: {saved}." + (f" Errors: {errors}" if errors else ""))
+        elif event.state == WorkerState.ERROR:
+            self._status(f"Tagged snapshot failed: {event.worker.error}")
 
     def on_unmount(self) -> None:
         for reader in self.readers:

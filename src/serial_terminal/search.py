@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from .filters import LineFilter
+from .formatting import format_tags
 from .reader import PortEvent
 
 
@@ -34,14 +35,19 @@ class ContextBounds:
 
 
 def find_matches(histories: Mapping[str, Sequence[PortEvent]], query: LineFilter) -> list[SearchMatch]:
-    """Return case-insensitive literal or regex matches in timestamp order."""
+    """Return text or explicit tag-label matches in timestamp order."""
     matches = [
         SearchMatch(port, index, event.timestamp)
         for port, events in histories.items()
         for index, event in enumerate(events)
-        if query.matches(event.text)
+        if query.matches(event_search_text(event))
     ]
     return sorted(matches, key=lambda match: (match.timestamp, match.port, match.index))
+
+
+def event_search_text(event: PortEvent) -> str:
+    """Provide the message and its explicit labels to the find matcher."""
+    return f"{event.text} {format_tags(event.tags)}".rstrip()
 
 
 def context_window(events: Sequence[PortEvent], timestamp: str, bounds: ContextBounds) -> tuple[list[PortEvent], int]:

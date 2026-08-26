@@ -3,8 +3,8 @@ from serial_terminal.reader import PortEvent
 from serial_terminal.search import ContextBounds, context_window, find_matches
 
 
-def event(port: str, second: int, text: str) -> PortEvent:
-    return PortEvent(port, "data", f"2026-08-25T00:00:0{second}+00:00", text)
+def event(port: str, second: int, text: str, tags: frozenset[str] = frozenset()) -> PortEvent:
+    return PortEvent(port, "data", f"2026-08-25T00:00:0{second}+00:00", text, tags)
 
 
 def test_find_matches_supports_case_insensitive_text_and_regex() -> None:
@@ -18,6 +18,19 @@ def test_find_matches_supports_case_insensitive_text_and_regex() -> None:
         ("first", 1),
     ]
     assert [(match.port, match.index) for match in find_matches(histories, LineFilter.parse(r"/rx\s+42/"))] == [("first", 1)]
+
+
+def test_find_matches_tag_labels_as_well_as_message_text() -> None:
+    histories = {
+        "gateway": [event("gateway", 1, "forwarded", frozenset({"a", "2"}))],
+        "edge": [event("edge", 2, "received", frozenset({"a"}))],
+    }
+
+    assert [(match.port, match.index) for match in find_matches(histories, LineFilter.parse("#a"))] == [
+        ("gateway", 0),
+        ("edge", 0),
+    ]
+    assert [(match.port, match.index) for match in find_matches(histories, LineFilter.parse(r"/#2/"))] == [("gateway", 0)]
 
 
 def test_context_window_aligns_to_timestamp_and_clamps_bounds() -> None:

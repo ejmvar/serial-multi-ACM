@@ -40,9 +40,15 @@ def log_file_name(port: str, timestamp: str | None = None) -> str:
     return f"log_{sanitize_port(port)}_{timestamp or file_timestamp()}.log"
 
 
-def render_record(timestamp: str, port: str, line: str) -> Text:
+def format_tags(tags: frozenset[str]) -> str:
+    """Return stable, explicit tag labels for display and study exports."""
+    return " ".join(f"#{tag}" for tag in sorted(tags))
+
+
+def render_record(timestamp: str, port: str, line: str, tags: frozenset[str] = frozenset()) -> Text:
     """Render one received line with safe Rich highlighting."""
-    text = Text(f"{timestamp} {port} | {line.rstrip()}")
+    suffix = f" [{format_tags(tags)}]" if tags else ""
+    text = Text(f"{timestamp} {port} | {line.rstrip()}{suffix}")
     for pattern, style in HIGHLIGHTS:
         for match in pattern.finditer(text.plain):
             text.stylize(style, match.start(), match.end())
