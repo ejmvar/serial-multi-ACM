@@ -48,3 +48,41 @@ def test_focus_zoom_restores_layout_and_keeps_port_output(monkeypatch, tmp_path:
             assert not panels.has_class("zoomed")
 
     asyncio.run(exercise())
+
+
+def test_find_context_scope_navigation_and_numeric_zoom_toggle(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["/dev/ttyACM0", "/dev/ttyACM1"], PortSettings(), tmp_path)
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            first, second = app.query(PortView)
+            for view in (first, second):
+                for number in range(3):
+                    app.post_message(app.ReaderUpdate(PortEvent(view.port, "data", f"2026-08-25T00:00:0{number}+00:00", f"needle {number}")))
+            await pilot.pause()
+
+            await pilot.press("f")
+            await pilot.press(*"needle", "enter")
+            assert len(app.search_matches) == 6
+            assert app.search_index == 0
+            await pilot.press("j")
+            assert app.search_index == 1
+
+            await pilot.press("a", "l")
+            assert app.global_context.after == 15
+            assert app.port_contexts[second.port].after == 10
+            await pilot.press("escape")
+
+            await pilot.press("2")
+            assert app.selected_port == second.port
+            assert app.zoomed_port is None
+            await pilot.press("z")
+            assert app.zoomed_port == second.port
+            await pilot.press("b", "h")
+            assert app.port_contexts[second.port].before == 5
+            assert app.global_context.before == 10
+            await pilot.press("escape", "2")
+            assert app.zoomed_port is None
+
+    asyncio.run(exercise())

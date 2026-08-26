@@ -14,6 +14,7 @@ from textual.widgets import Footer, Header, Input, Label, RichLog, Static
 from .filters import LineFilter, is_visible
 from .formatting import render_record
 from .reader import PortEvent, PortSettings, SerialReader
+from .search import ContextBounds, SearchMatch, context_window, find_matches
 
 
 class PortView(Static):
@@ -26,6 +27,7 @@ class PortView(Static):
         self.port = port
         self.paused = False
         self.zoomed = False
+        self.history: list[PortEvent] = []
 
     def compose(self) -> ComposeResult:
         yield Label(self.port, classes="port-title")
@@ -49,7 +51,26 @@ class PortView(Static):
         self.query_one(Label).update(" ".join(part for part in [self.port, *suffixes] if part))
 
     def write_event(self, event: PortEvent) -> None:
+        self.history.append(event)
+        if len(self.history) > 5_000:
+            del self.history[:-5_000]
         self.query_one(RichLog).write(render_record(event.timestamp, event.port, event.text))
+
+    def show_context(self, timestamp: str, bounds: ContextBounds) -> None:
+        """Replace the panel with retained lines surrounding *timestamp*."""
+        log = self.query_one(RichLog)
+        events, offset = context_window(self.history, timestamp, bounds)
+        log.clear()
+        for event in events:
+            log.write(render_record(event.timestamp, event.port, event.text))
+        log.scroll_to(y=offset, animate=False, force=True)
+
+    def show_history(self) -> None:
+        """Restore the normal retained visual history after leaving search."""
+        log = self.query_one(RichLog)
+        log.clear()
+        for event in self.history:
+            log.write(render_record(event.timestamp, event.port, event.text))
 
 
 class TerminalApp(App[None]):
@@ -69,9 +90,12 @@ class TerminalApp(App[None]):
     """
     BINDINGS = [
         Binding("space", "toggle_global_pause", "Pause all"),
-        Binding("p", "toggle_port_pause", "Pause port"),
-        Binding("f", "edit_global_filter", "Global filter"),
-        Binding("F", "edit_port_filter", "Port filter"),
+        Binding("P", "toggle_port_pause", "Pause port"),
+        Binding("f", "edit_search", "Find history"),
+        Binding("g", "edit_global_filter", "Global filter"),
+        Binding("p", "edit_port_filter", "Port filter"),
+        Binding("a", "edit_after_context", "After context"),
+        Binding("b", "edit_before_context", "Before context"),
         Binding("z", "toggle_zoom", "Zoom port"),
         Binding("escape", "cancel_filter", "Cancel filter"),
         Binding("q", "quit", "Quit"),
@@ -93,6 +117,12 @@ class TerminalApp(App[None]):
         self.port_filters: dict[str, LineFilter | None] = {port: None for port in ports}
         self.filter_target: str | None = None
         self.zoomed_port: str | None = None
+        self.search_filter: LineFilter | None = None
+        self.search_matches: list[SearchMatch] = []
+        self.search_index = 0
+        self.global_context = ContextBounds()
+        self.port_contexts: dict[str, ContextBounds] = {port: ContextBounds() for port in ports}
+        self.context_target: str | None = None
         self.readers: list[SerialReader] = []
 
     def compose(self) -> ComposeResult:
@@ -100,7 +130,7 @@ class TerminalApp(App[None]):
         with Horizontal(id="panels"):
             for port in self.ports:
                 yield PortView(port)
-        yield Input(placeholder="Filter text, or /regex/", id="filter")
+        yield Input(placeholder="Find text, or /regex/", id="filter")
         yield Label("Ready. Focus a port with Tab or 1-9.", id="status")
         yield Footer()
 
@@ -128,11 +158,30 @@ class TerminalApp(App[None]):
         return next(view for view in self.query(PortView) if view.port == port)
 
     def on_key(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self.filter_target is not None:
+            return
         if event.key.isdigit() and event.key != "0":
             index = int(event.key) - 1
             if index < len(self.ports):
-                self._port_view(self.ports[index]).focus()
+                port = self.ports[index]
+                if self.zoomed_port == port:
+                    self.action_toggle_zoom()
+                else:
+                    self._port_view(port).focus()
+                    if self.zoomed_port:
+                        self.action_toggle_zoom()
                 event.stop()
+            return
+        if self.context_target:
+            adjustments = {"j": 1, "k": -1, "h": -5, "l": 5}
+            if event.key in adjustments:
+                self._adjust_context(adjustments[event.key])
+                event.stop()
+            return
+        if self.search_matches and event.key in {"j", "k"}:
+            self.search_index = (self.search_index + (1 if event.key == "j" else -1)) % len(self.search_matches)
+            self._show_search_result()
+            event.stop()
 
     def select_port(self, port: str) -> None:
         self.selected_port = port
@@ -167,13 +216,25 @@ class TerminalApp(App[None]):
         current = self.port_filters[self.selected_port]
         self._show_filter(self.selected_port, current.source if current else "")
 
+    def action_edit_search(self) -> None:
+        self._show_filter("search", self.search_filter.source if self.search_filter else "")
+
+    def action_edit_after_context(self) -> None:
+        self._activate_context("after")
+
+    def action_edit_before_context(self) -> None:
+        self._activate_context("before")
+
     def _show_filter(self, target: str, value: str) -> None:
         self.filter_target = target
         input_ = self.query_one(Input)
         input_.value = value
         input_.add_class("visible")
         input_.focus()
-        self._status(f"Editing {'global' if target == 'global' else target} filter. Empty clears; /.../ is regex.")
+        if target == "search":
+            self._status("Searching retained display history. Empty clears; /.../ is regex. j/k navigate results.")
+        else:
+            self._status(f"Editing {'global' if target == 'global' else target} live filter. Empty clears; /.../ is regex.")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if self.filter_target is None:
@@ -183,15 +244,35 @@ class TerminalApp(App[None]):
         except re.error as error:
             self._status(f"Invalid regular expression: {error}")
             return
-        if self.filter_target == "global":
+        if self.filter_target == "search":
+            self.search_filter = parsed
+            self.search_matches = find_matches({view.port: view.history for view in self.query(PortView)}, parsed) if parsed else []
+            self.search_index = 0
+            if self.search_matches:
+                self._show_search_result()
+            else:
+                self._status("No retained displayed-history matches. Live filters and logging are unchanged.")
+        elif self.filter_target == "global":
             self.global_filter = parsed
         else:
             self.port_filters[self.filter_target] = parsed
-        self._status("Filter updated. It applies to new visual lines; disk logging is unchanged.")
+        if self.filter_target != "search":
+            self._status("Live filter updated. It applies to new visual lines; disk logging is unchanged.")
         self.action_cancel_filter()
 
     def action_cancel_filter(self) -> None:
+        if self.context_target:
+            self.context_target = None
+            self._status("Context adjustment off. j/k navigate search results.")
+            return
         if self.filter_target is None:
+            if self.search_filter:
+                self.search_filter = None
+                self.search_matches = []
+                for view in self.query(PortView):
+                    view.show_history()
+                self._status("Search cleared; retained visual history restored.")
+                return
             if self.zoomed_port:
                 self.action_toggle_zoom()
             return
@@ -199,6 +280,35 @@ class TerminalApp(App[None]):
         input_ = self.query_one(Input)
         input_.remove_class("visible")
         self.set_focus(None)
+
+    def _active_context(self) -> ContextBounds:
+        return self.port_contexts[self.selected_port] if self.zoomed_port else self.global_context
+
+    def _activate_context(self, target: str) -> None:
+        if not self.search_matches:
+            self._status("Find retained history with f before adjusting context.")
+            return
+        self.context_target = target
+        bounds = self._active_context()
+        self._status(f"Adjusting {target.upper()} context: before={bounds.before}, after={bounds.after}; j/k +/-1, h/l -/+5, Escape exits.")
+
+    def _adjust_context(self, amount: int) -> None:
+        assert self.context_target is not None
+        if self.zoomed_port:
+            self.port_contexts[self.selected_port] = self._active_context().adjusted(self.context_target, amount)
+        else:
+            self.global_context = self._active_context().adjusted(self.context_target, amount)
+        self._show_search_result()
+
+    def _show_search_result(self) -> None:
+        match = self.search_matches[self.search_index]
+        for view in self.query(PortView):
+            if view.display:
+                bounds = self.port_contexts[view.port] if self.zoomed_port else self.global_context
+                view.show_context(match.timestamp, bounds)
+        bounds = self._active_context()
+        mode = f" Adjusting {self.context_target.upper()}: j/k +/-1, h/l -/+5." if self.context_target else " j/k navigate; a/b adjust context."
+        self._status(f"Find {self.search_index + 1}/{len(self.search_matches)} at {match.timestamp} ({match.port}); before={bounds.before}, after={bounds.after}.{mode}")
 
     def _status(self, text: str) -> None:
         self.query_one("#status", Label).update(text)
