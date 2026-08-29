@@ -50,18 +50,69 @@ def event_search_text(event: PortEvent) -> str:
     return f"{event.text} {format_tags(event.tags)}".rstrip()
 
 
-def context_window(events: Sequence[PortEvent], timestamp: str, bounds: ContextBounds) -> tuple[list[PortEvent], int]:
+def context_window(
+    events: Sequence[PortEvent],
+    timestamp: str,
+    bounds: ContextBounds,
+    *,
+    index: int | None = None,
+) -> tuple[list[PortEvent], int]:
     """Return a timestamp-aligned context window and the focused offset within it."""
     if not events:
         return [], 0
+    if index is not None:
+        if not 0 <= index < len(events) or events[index].timestamp != timestamp:
+            return [], 0
+        focused = index
+    else:
+        focused = None
     # ISO-8601 timestamps sort lexically. Pick the first event at or after the
     # target, or the final event when all retained events precede it.
-    for candidate, event in enumerate(events):
-        if event.timestamp >= timestamp:
-            index = candidate
-            break
-    else:
-        index = len(events) - 1
-    start = max(0, index - bounds.before)
-    end = min(len(events), index + bounds.after + 1)
-    return list(events[start:end]), index - start
+    if focused is None:
+        for candidate, event in enumerate(events):
+            if event.timestamp >= timestamp:
+                focused = candidate
+                break
+        else:
+            focused = len(events) - 1
+    start = max(0, focused - bounds.before)
+    end = min(len(events), focused + bounds.after + 1)
+    return list(events[start:end]), focused - start
+
+
+def recover_selected_match(
+    matches: Sequence[SearchMatch],
+    previous: SearchMatch | None,
+    evicted: Mapping[str, int] | None = None,
+) -> SearchMatch | None:
+    """Retain or deterministically recover a selection after retained changes.
+
+    Eviction counts translate a previous history index into the new retained
+    history. If that exact event no longer matches, the first sorted match at
+    or after its translated identity is selected.
+    """
+    if not matches:
+        return None
+    if previous is None:
+        return matches[0]
+
+    removed = (evicted or {}).get(previous.port, 0)
+    translated_index = previous.index - removed
+    exact = next(
+        (
+            match
+            for match in matches
+            if match.port == previous.port
+            and match.index == translated_index
+            and match.timestamp == previous.timestamp
+        ),
+        None,
+    )
+    if exact is not None:
+        return exact
+
+    target = (previous.timestamp, previous.port, translated_index)
+    return next(
+        (match for match in matches if (match.timestamp, match.port, match.index) >= target),
+        None,
+    )
