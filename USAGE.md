@@ -59,6 +59,31 @@ While this find is active, `T`, `a` applies `#a` to the **current find match**, 
 
 In side-by-side view, context bounds apply to every displayed panel. In a zoomed panel, adjustments apply only to that port.
 
+## Read the visual markers
+
+The panel prefix is a transient orientation aid, not part of the message:
+
+| Marker | Meaning |
+| --- | --- |
+| `-` | Latest accepted event that remains in that panel's retained displayed history. |
+| `+` | The exact event selected by find, identified by its port and retained history index. |
+| `+-` | Both meanings apply to the same event. |
+
+Only visible panels are marked. Zooming or restoring the side-by-side layout recomputes the visible projection: a hidden panel has no marker, while an exposed panel is evaluated independently. Tab, numeric focus, and other focus changes do not transfer `+` to the focused panel. A selected event that is merely present in another panel's timestamp context does not receive a synthetic `+`.
+
+Markers remain attached to retained event identity, never to wrapped visual rows. Long messages can wrap into multiple rows without duplicating or moving a marker. Accepted live display events move `-`; events rejected by a live filter or by a paused panel do not. Tag changes, redraws, and context navigation preserve both marker owners. When retention evicts the selected event, find results are recomputed in `(timestamp, port, retained index)` order: the deterministic successor is selected when present; otherwise find selection clears and no `+` is fabricated.
+
+### Presentation-only guarantee
+
+The marker is added only while rendering the visual panel. It is not stored in the retained event text and never enters:
+
+- raw per-port log files;
+- tagged snapshot files;
+- find input, searchable terms, or match results;
+- live filter matching or pause/retention decisions.
+
+Thus searching, filtering, pausing, eviction, logging, and snapshot contents use the original unmarked event and tag data.
+
 ## Export a tagged study snapshot
 
 Press `S`. The app copies the current retained histories and writes the study files in the configured `--log-dir` in a background worker, so serial readers, visual streaming, live filters, and continuous raw logging keep running. The status line reports every path and event count, plus any error.

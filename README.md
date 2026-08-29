@@ -33,4 +33,18 @@ Logs are written independently as `log_<sanitized-port>_<YYYYMMDD_HHMMSS>.log` i
 | `Escape` | Cancel pending tag/untag mode, exit context adjustment, cancel input, clear an active search, or restore the side-by-side layout. |
 | `q` | Quit. |
 
+## Visual markers
+
+Markers are visual-only prefixes on retained display records:
+
+| Marker | Meaning |
+| --- | --- |
+| `-` | The panel's latest accepted, retained displayed event. |
+| `+` | The exact retained event selected by find. |
+| `+-` | One event that is both the latest event and the selected find event. |
+
+Markers are scoped to visible panels. Zoom and layout changes redraw ownership for the panels currently shown; hidden panels receive no marker, and changing focus never moves `+`. Ownership uses the retained `(port, history index)`, not wrapped `RichLog` rows, so a wrapped event receives one marker and never transfers it to another event. Find context on another panel may share a timestamp, but receives no synthetic `+`.
+
+An accepted displayed event moves `-` to the newest retained event. Filtered-out and paused events do not move it. Tags, redraws, live updates, and retention eviction preserve event identity; after eviction, find selects the deterministic next match when available or clears `+` without inventing a row. Markers never enter raw logs, tagged snapshots, search input or terms, filtering, pause/retention decisions, or retained `PortEvent.text`.
+
 TX, RX, ACK, NACK, and common log levels are highlighted. Find also matches visible tag labels, so enter `#a` to follow tag `a` across ports. The active event is the current find match while search is active; otherwise it is the latest retained displayed event in the selected port. Live filters affect only new TUI lines, never the complete per-port log file. Each port retains up to 5,000 displayed lines for find/navigation; readers and disk logging continue independently. Tagged snapshots export this retained displayed history only, never hidden or already-discarded raw input.
