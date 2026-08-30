@@ -4,6 +4,7 @@ from serial_terminal.search import (
     ContextBounds,
     SearchMatch,
     context_window,
+    event_search_text,
     find_matches,
     recover_selected_match,
 )
@@ -37,6 +38,15 @@ def test_find_matches_tag_labels_as_well_as_message_text() -> None:
         ("edge", 0),
     ]
     assert [(match.port, match.index) for match in find_matches(histories, LineFilter.parse(r"/#2/"))] == [("gateway", 0)]
+
+
+def test_search_uses_raw_text_and_tags_not_derived_projection_words() -> None:
+    retained = event("port", 1, "W (80) handshake: peer found", frozenset({"a"}))
+
+    assert event_search_text(retained) == "W (80) handshake: peer found #a"
+    for derived_term in ("WARN", "peer discovered", "device elapsed"):
+        assert find_matches({"port": [retained]}, LineFilter.parse(derived_term)) == []
+    assert [(match.port, match.index) for match in find_matches({"port": [retained]}, LineFilter.parse("#a"))] == [("port", 0)]
 
 
 def test_context_window_aligns_to_timestamp_and_clamps_bounds() -> None:

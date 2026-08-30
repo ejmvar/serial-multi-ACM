@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import dataclass
 import re
+from typing import Literal
 
 from rich.text import Text
 
@@ -17,6 +19,43 @@ HIGHLIGHTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:WARN|WARNING)\b", re.IGNORECASE), "bold yellow"),
     (re.compile(r"\b(?:INFO|DEBUG|TRACE)\b", re.IGNORECASE), "blue"),
 )
+
+_DEVICE_LINE_RE = re.compile(r"^(I|W|E) \((\d+)\) ([^:]+): (.+)$")
+_DEVICE_HEADER_RE = re.compile(r"(?:I|W|E) \(\d+\) [^:]+: ")
+
+
+@dataclass(frozen=True)
+class DeviceLine:
+    """Immutable interpretation of one complete ESP-IDF device record."""
+
+    severity: Literal["INFO", "WARN", "ERROR"]
+    device_ms: int
+    component: str
+    message: str
+    explanation: str | None
+
+
+def parse_device_line(line: str) -> DeviceLine | None:
+    """Parse one conservative, complete ESP-IDF-style device line."""
+    if any(control in line for control in ("\x1b", "\r", "\n")):
+        return None
+
+    match = _DEVICE_LINE_RE.fullmatch(line)
+    if match is None:
+        return None
+
+    level, device_ms, component, message = match.groups()
+    if _DEVICE_HEADER_RE.search(message) is not None:
+        return None
+
+    severity: Literal["INFO", "WARN", "ERROR"] = {"I": "INFO", "W": "WARN", "E": "ERROR"}[level]
+    explanation = None
+    if component == "handshake" and message == "peer found":
+        explanation = "peer discovered"
+    elif message in {"ACK", "acknowledged"}:
+        explanation = "acknowledgement received"
+
+    return DeviceLine(severity, int(device_ms), component, message, explanation)
 
 
 def iso_timestamp() -> str:
@@ -45,11 +84,32 @@ def format_tags(tags: frozenset[str]) -> str:
     return " ".join(f"#{tag}" for tag in sorted(tags))
 
 
-def render_record(timestamp: str, port: str, line: str, tags: frozenset[str] = frozenset()) -> Text:
-    """Render one received line with safe Rich highlighting."""
+def render_record(
+    timestamp: str,
+    port: str,
+    line: str,
+    tags: frozenset[str] = frozenset(),
+    *,
+    marker: str = "",
+) -> Text:
+    """Render raw evidence followed by its conservative derived projection."""
     suffix = f" [{format_tags(tags)}]" if tags else ""
-    text = Text(f"{timestamp} {port} | {line.rstrip()}{suffix}")
-    for pattern, style in HIGHLIGHTS:
-        for match in pattern.finditer(text.plain):
-            text.stylize(style, match.start(), match.end())
+    prefix = f"{marker} " if marker else ""
+    parsed = parse_device_line(line)
+    if parsed is None:
+        derived = "↳ Uninterpreted"
+    else:
+        explanation = f": {parsed.explanation}" if parsed.explanation else ""
+        derived = (
+            f"↳ {parsed.severity} {parsed.component} | "
+            f"device elapsed: {parsed.device_ms} ms{explanation}"
+        )
+
+    # Text construction does not parse markup; callers must retain markup=False
+    # when printing this renderable through Rich.
+    text = Text(f"{prefix}{timestamp} {port} | {line}{suffix}\n{derived}")
+    if not any(control in line for control in ("\x1b", "\r", "\n")):
+        for pattern, style in HIGHLIGHTS:
+            for match in pattern.finditer(text.plain):
+                text.stylize(style, match.start(), match.end())
     return text

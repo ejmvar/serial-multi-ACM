@@ -17,8 +17,17 @@ from textual.worker import Worker, WorkerState
 from .filters import LineFilter, is_visible
 from .formatting import render_record
 from .reader import PortEvent, PortSettings, SerialReader
-from .search import ContextBounds, SearchMatch, context_window, find_matches
+from .search import ContextBounds, SearchMatch, context_window, find_matches, recover_selected_match
 from .snapshots import SnapshotResult, save_tagged_snapshots
+
+
+EventRef = tuple[str, int]
+
+
+def resolve_marker(ref: EventRef, latest: EventRef | None, selected: EventRef | None) -> str:
+    latest_here = ref == latest
+    selected_here = ref == selected
+    return "+-" if latest_here and selected_here else "+" if selected_here else "-" if latest_here else ""
 
 
 class PortView(Static):
@@ -32,6 +41,7 @@ class PortView(Static):
         self.paused = False
         self.zoomed = False
         self.history: list[PortEvent] = []
+        self._latest_line_index: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Label(self.port, classes="port-title")
@@ -54,31 +64,67 @@ class PortView(Static):
         suffixes = ["[ZOOMED]" if self.zoomed else "", "[PAUSED]" if self.paused else ""]
         self.query_one(Label).update(" ".join(part for part in [self.port, *suffixes] if part))
 
-    def write_event(self, event: PortEvent) -> None:
+    def write_event(self, event: PortEvent) -> int:
+        had_history = bool(self.history)
         self.history.append(event)
+        evicted = 0
         if len(self.history) > 5_000:
+            evicted = len(self.history) - 5_000
             del self.history[:-5_000]
-        self.query_one(RichLog).write(render_record(event.timestamp, event.port, event.text, event.tags))
+        if evicted or not had_history:
+            self._projection(list(enumerate(self.history)))
+        else:
+            self._append_projection(len(self.history) - 1, event)
+        return evicted
 
     def replace_event(self, index: int, event: PortEvent) -> None:
         """Replace one retained record after its user-assigned tags change."""
         self.history[index] = event
 
-    def show_context(self, timestamp: str, bounds: ContextBounds) -> None:
+    def _projection(self, events: list[tuple[int, PortEvent]], selected: EventRef | None = None) -> None:
+        log = self.query_one(RichLog)
+        latest = (self.port, len(self.history) - 1) if self.history else None
+        log.clear()
+        for index, event in events:
+            marker = resolve_marker((self.port, index), latest if self.display else None, selected if self.display else None)
+            log.write(render_record(event.timestamp, event.port, event.text, event.tags, marker=marker))
+        self._latest_line_index = next(
+            (index for index, line in reversed(list(enumerate(log.lines))) if line.text.startswith(("- ", "+- "))),
+            None,
+        )
+
+    def _append_projection(self, index: int, event: PortEvent) -> None:
+        """Append one live record without rebuilding the retained projection."""
+        log = self.query_one(RichLog)
+        if self.display and self._latest_line_index is not None:
+            previous = log.lines[self._latest_line_index]
+            if previous.text.startswith(("- ", "+- ")):
+                log.lines[self._latest_line_index] = previous.crop(2, previous.cell_length)
+                log._line_cache.clear()
+                log.refresh_line(self._latest_line_index)
+        self._latest_line_index = len(log.lines)
+        log.write(render_record(event.timestamp, event.port, event.text, event.tags, marker="-" if self.display else ""))
+
+    def marker_texts(self) -> list[str]:
+        return [line.text for line in self.query_one(RichLog).lines if line.text.startswith(("- ", "+ ", "+- "))]
+
+    def show_context(self, timestamp: str, bounds: ContextBounds, *, selected: EventRef | None = None) -> None:
         """Replace the panel with retained lines surrounding *timestamp*."""
         log = self.query_one(RichLog)
-        events, offset = context_window(self.history, timestamp, bounds)
-        log.clear()
-        for event in events:
-            log.write(render_record(event.timestamp, event.port, event.text, event.tags))
+        index = selected[1] if selected and selected[0] == self.port else None
+        events, offset = context_window(self.history, timestamp, bounds, index=index)
+        if index is None and events:
+            focus = next((i for i, event in enumerate(self.history) if event.timestamp >= timestamp), len(self.history) - 1)
+            start = max(0, focus - offset)
+        else:
+            start = index - offset if index is not None and events else 0
+        self._projection(list(enumerate(events, start)), selected)
+        log = self.query_one(RichLog)
         log.scroll_to(y=offset, animate=False, force=True)
 
     def show_history(self) -> None:
         """Restore the normal retained visual history after leaving search."""
-        log = self.query_one(RichLog)
-        log.clear()
-        for event in self.history:
-            log.write(render_record(event.timestamp, event.port, event.text, event.tags))
+        self._projection(list(enumerate(self.history)))
 
 
 class TerminalApp(App[None]):
@@ -166,7 +212,9 @@ class TerminalApp(App[None]):
             return
         view = self._port_view(event.port)
         if not view.paused and is_visible(event.text, self.global_filter, self.port_filters[event.port]):
-            view.write_event(event)
+            evicted = view.write_event(event)
+            if self.search_filter is not None:
+                self._reconcile_selection({event.port: evicted})
 
     def _port_view(self, port: str) -> PortView:
         return next(view for view in self.query(PortView) if view.port == port)
@@ -227,11 +275,13 @@ class TerminalApp(App[None]):
             panels.remove_class("zoomed")
             self._status(f"Restored side-by-side layout from {self.zoomed_port}.")
             self.zoomed_port = None
+            self._redraw_visible()
             return
         self.zoomed_port = self.selected_port
         self._port_view(self.zoomed_port).set_zoomed(True)
         panels.add_class("zoomed")
         self._status(f"Zoomed {self.zoomed_port}. Press z or Escape to restore the layout.")
+        self._redraw_visible()
 
     def action_edit_global_filter(self) -> None:
         self._show_filter("global", self.global_filter.source if self.global_filter else "")
@@ -304,17 +354,22 @@ class TerminalApp(App[None]):
         self._status(f"{'Removed' if removing else 'Assigned'} #{tag} on {view.port} at {record.timestamp}.")
 
     def _refresh_after_tag_change(self, port: str, index: int) -> None:
+        self._reconcile_selection()
+
+    def _reconcile_selection(self, evicted: dict[str, int] | None = None) -> None:
+        previous = self.search_matches[self.search_index] if self.search_matches else None
         if self.search_filter is None:
-            self._port_view(port).show_history()
+            self.search_matches = []
+            self._redraw_visible()
             return
-        self.search_matches = find_matches({view.port: view.history for view in self.query(PortView)}, self.search_filter)
-        for match_index, match in enumerate(self.search_matches):
-            if (match.port, match.index) == (port, index):
-                self.search_index = match_index
-                self._show_search_result()
-                return
-        if self.search_matches:
-            self.search_index = min(self.search_index, len(self.search_matches) - 1)
+        histories = {view.port: view.history for view in self.query(PortView)}
+        self.search_matches = find_matches(histories, self.search_filter)
+        selected = recover_selected_match(self.search_matches, previous, evicted)
+        self.search_index = self.search_matches.index(selected) if selected else 0
+        self._redraw_visible()
+
+    def _redraw_visible(self) -> None:
+        if self.search_filter is not None and self.search_matches:
             self._show_search_result()
         else:
             for view in self.query(PortView):
@@ -368,8 +423,7 @@ class TerminalApp(App[None]):
             if self.search_filter:
                 self.search_filter = None
                 self.search_matches = []
-                for view in self.query(PortView):
-                    view.show_history()
+                self._redraw_visible()
                 self._status("Search cleared; retained visual history restored.")
                 return
             if self.zoomed_port:
@@ -401,10 +455,13 @@ class TerminalApp(App[None]):
 
     def _show_search_result(self) -> None:
         match = self.search_matches[self.search_index]
+        selected = (match.port, match.index)
         for view in self.query(PortView):
             if view.display:
                 bounds = self.port_contexts[view.port] if self.zoomed_port else self.global_context
-                view.show_context(match.timestamp, bounds)
+                view.show_context(match.timestamp, bounds, selected=selected)
+            else:
+                view.show_history()
         bounds = self._active_context()
         mode = f" Adjusting {self.context_target.upper()}: j/k +/-1, h/l -/+5." if self.context_target else " j/k navigate; a/b adjust context."
         self._status(f"Find {self.search_index + 1}/{len(self.search_matches)} at {match.timestamp} ({match.port}); before={bounds.before}, after={bounds.after}.{mode}")

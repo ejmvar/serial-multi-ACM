@@ -106,6 +106,34 @@ Each line preserves the event timestamp and original message with an explicit ta
 2026-08-26T12:00:02.000+00:00 INFO route=42 observed [tags: -]
 ```
 
+## Read the human-readable projection
+
+Each visual event keeps its raw line and adds a derived line beneath it; no
+toggle is required to recover evidence. The leading ISO-8601 UTC timestamp is
+the host capture clock. A derived `device elapsed: N ms` value is the device
+clock from that record, not a host timestamp.
+
+Interpretation is deliberately exact and single-line only:
+
+```text
+^(I|W|E) \((\d+)\) ([^:]+): (.+)$
+```
+
+The severity prefixes map to `INFO`, `WARN`, and `ERROR`. The only semantic
+explanations are exact `handshake: peer found` → `peer discovered`, and a
+message exactly equal to `ACK` or `acknowledged` → `acknowledgement received`.
+All other valid records receive neutral fields. Unknown or malformed text,
+bootloader output, continuation lines, concatenated records, ANSI/control
+input, and incomplete records remain raw and are labeled `Uninterpreted`.
+Input is never stripped, rewritten, or reconstructed; Rich styling is not
+allowed to treat input ANSI/control sequences as instructions.
+
+This projection describes one port at a time. It intentionally does not
+interpret inter-port communication, infer graph/MAC/ROLE/PORT topology,
+correlate PASS/FAIL outcomes, or generate reports. Use the raw per-port logs
+for authoritative evidence; find, filters, tags, markers, pause/zoom,
+retention, and tagged snapshots continue to use the original raw event.
+
 ## Retention boundary
 
 Tags belong only to retained `PortEvent` records in the Textual display history. They are shown after redraws and searches, and they are saved in tagged snapshots. The original per-port raw logs remain unchanged and contain every reader event independently of display filters, pauses, retention eviction, or tags.

@@ -11,6 +11,26 @@ uv run serial-terminal /dev/ttyACM0 --baudrate 9600 --bytesize 7 --parity E --st
 
 Logs are written independently as `log_<sanitized-port>_<YYYYMMDD_HHMMSS>.log` in `log/` by default. Every record starts with an ISO-8601 UTC timestamp with milliseconds.
 
+## Human-readable projection
+
+The visual panels show every retained event as two lines: the unchanged raw
+record followed by a conservative derived projection. The host ISO-8601 UTC
+timestamp is the capture clock; a parsed `device elapsed: N ms` value is the device's elapsed
+clock. They are separate clocks and are never interchangeable. The raw record
+and raw tagged snapshot remain authoritative.
+
+Only a complete single-line record matching
+`^(I|W|E) \((\d+)\) ([^:]+): (.+)$` is interpreted. `I`, `W`, and `E` become
+`INFO`, `WARN`, and `ERROR`; exact `handshake: peer found`, `ACK`, and
+`acknowledged` rules produce only their documented explanations. Unknown,
+malformed, bootloader, continuation, concatenated, ANSI-bearing, or control-
+bearing input is retained and shown as `Uninterpreted`, without stripping or
+reconstructing anything.
+
+This is a single-port/per-panel presentation aid. It does not interpret
+inter-port communication, infer graph/MAC/ROLE/PORT topology, correlate
+outcomes, or generate reports.
+
 **For the complete three-device tagging and study-export workflow, see [USAGE.md](USAGE.md).**
 
 ## Shortcuts

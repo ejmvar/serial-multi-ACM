@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from serial_terminal.reader import PortEvent
-from serial_terminal.snapshots import save_tagged_snapshots, tagged_log_file_name
+from serial_terminal.snapshots import save_tagged_snapshots, snapshot_line, tagged_log_file_name
 
 
 def event(port: str, text: str, tags: frozenset[str] = frozenset()) -> PortEvent:
@@ -30,3 +30,14 @@ def test_tagged_snapshot_uses_safe_port_names_preserves_tags_and_never_overwrite
     assert not repeated.written
     assert len(repeated.errors) == 2
     assert "already exists" in repeated.errors[0]
+
+
+def test_snapshot_preserves_raw_interpretable_event_without_derived_text() -> None:
+    retained = event("port", "W (80) handshake: peer found", frozenset({"a"}))
+
+    assert snapshot_line(retained) == (
+        "2026-08-26T12:00:00.000+00:00 W (80) handshake: peer found [tags: #a]\n"
+    )
+    assert "WARN" not in snapshot_line(retained)
+    assert "peer discovered" not in snapshot_line(retained)
+    assert "device elapsed" not in snapshot_line(retained)
