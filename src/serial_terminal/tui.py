@@ -15,7 +15,7 @@ from textual.widgets import Footer, Header, Input, Label, RichLog, Static
 from textual.worker import Worker, WorkerState
 
 from .filters import LineFilter, is_visible
-from .formatting import render_record
+from .formatting import DEFAULT_DISPLAY_POLICY, DisplayPolicy, parse_device_line, format_mac, render_record
 from .reader import PortEvent, PortSettings, SerialReader
 from .search import ContextBounds, SearchMatch, context_window, find_matches, recover_selected_match
 from .snapshots import SnapshotResult, save_tagged_snapshots
@@ -42,9 +42,11 @@ class PortView(Static):
         self.zoomed = False
         self.history: list[PortEvent] = []
         self._latest_line_index: int | None = None
+        self.device_mac: str | None = None
+        self.role: str | None = None
 
     def compose(self) -> ComposeResult:
-        yield Label(self.port, classes="port-title")
+        yield Label(self._title(), classes="port-title")
         yield RichLog(wrap=True, markup=False, highlight=False)
 
     def set_paused(self, paused: bool) -> None:
@@ -62,11 +64,21 @@ class PortView(Static):
 
     def _update_title(self) -> None:
         suffixes = ["[ZOOMED]" if self.zoomed else "", "[PAUSED]" if self.paused else ""]
-        self.query_one(Label).update(" ".join(part for part in [self.port, *suffixes] if part))
+        self.query_one(Label).update(" ".join(part for part in [self._title(), *suffixes] if part))
+
+    def _title(self) -> str:
+        short_mac = format_mac(self.device_mac, DisplayPolicy(mac_mode="4")) if self.device_mac else "?"
+        role = "GW" if self.role == "gateway" else "EDGE" if self.role == "edge" else "?"
+        return f"{self.port} | DEV {short_mac.upper()} | ROLE={role}"
 
     def write_event(self, event: PortEvent) -> int:
         had_history = bool(self.history)
         self.history.append(event)
+        parsed = parse_device_line(event.text)
+        if parsed is not None and parsed.device_mac and parsed.role:
+            self.device_mac = parsed.device_mac
+            self.role = parsed.role
+            self._update_title()
         evicted = 0
         if len(self.history) > 5_000:
             evicted = len(self.history) - 5_000
@@ -87,7 +99,16 @@ class PortView(Static):
         log.clear()
         for index, event in events:
             marker = resolve_marker((self.port, index), latest if self.display else None, selected if self.display else None)
-            log.write(render_record(event.timestamp, event.port, event.text, event.tags, marker=marker))
+            log.write(
+                render_record(
+                    event.timestamp,
+                    event.port,
+                    event.text,
+                    event.tags,
+                    marker=marker,
+                    policy=self._display_policy(),
+                )
+            )
         self._latest_line_index = next(
             (index for index, line in reversed(list(enumerate(log.lines))) if line.text.startswith(("- ", "+- "))),
             None,
@@ -103,7 +124,19 @@ class PortView(Static):
                 log._line_cache.clear()
                 log.refresh_line(self._latest_line_index)
         self._latest_line_index = len(log.lines)
-        log.write(render_record(event.timestamp, event.port, event.text, event.tags, marker="-" if self.display else ""))
+        log.write(
+            render_record(
+                event.timestamp,
+                event.port,
+                event.text,
+                event.tags,
+                marker="-" if self.display else "",
+                policy=self._display_policy(),
+            )
+        )
+
+    def _display_policy(self) -> DisplayPolicy:
+        return self.app.display_policy if isinstance(self.app, TerminalApp) else DEFAULT_DISPLAY_POLICY
 
     def marker_texts(self) -> list[str]:
         return [line.text for line in self.query_one(RichLog).lines if line.text.startswith(("- ", "+ ", "+- "))]
@@ -156,6 +189,9 @@ class TerminalApp(App[None]):
         Binding("U", "start_letter_untag", "Untag a-z"),
         Binding("S", "save_tagged_snapshot", "Save tagged study"),
         Binding("z", "toggle_zoom", "Zoom port"),
+        Binding("i", "toggle_raw_lines", "Hide interpreted raw"),
+        Binding("m", "select_mac_short", "MAC:4"),
+        Binding("M", "select_mac_long", "MAC:6"),
         Binding("escape", "cancel_filter", "Cancel filter"),
         Binding("q", "quit", "Quit"),
     ]
@@ -171,6 +207,7 @@ class TerminalApp(App[None]):
         self.settings = settings
         self.log_dir = log_dir
         self.global_paused = False
+        self.display_policy = DEFAULT_DISPLAY_POLICY
         self.selected_port = ports[0]
         self.global_filter: LineFilter | None = None
         self.port_filters: dict[str, LineFilter | None] = {port: None for port in ports}
@@ -191,7 +228,7 @@ class TerminalApp(App[None]):
             for port in self.ports:
                 yield PortView(port)
         yield Input(placeholder="Find text, or /regex/", id="filter")
-        yield Label("Ready. Focus a port with Tab or 1-9.", id="status")
+        yield Label(self._policy_status("Ready. Focus a port with Tab or 1-9."), id="status")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -267,6 +304,22 @@ class TerminalApp(App[None]):
         view = self._port_view(self.selected_port)
         view.set_paused(not view.paused)
         self._status(f"{self.selected_port} visual display {'paused' if view.paused else 'resumed'}; disk logging continues.")
+
+    def action_toggle_raw_lines(self) -> None:
+        self.display_policy = self.display_policy.toggle_raw()
+        self._redraw_visible()
+        self._status("Interpreted raw lines hidden." if not self.display_policy.raw_lines else "Interpreted raw lines shown.")
+
+    def action_select_mac_short(self) -> None:
+        self._select_mac("m")
+
+    def action_select_mac_long(self) -> None:
+        self._select_mac("M")
+
+    def _select_mac(self, key: str) -> None:
+        self.display_policy = self.display_policy.select_mac(key)
+        self._redraw_visible()
+        self._status(f"MAC display set to {self.display_policy.mac_mode.upper()}.")
 
     def action_toggle_zoom(self) -> None:
         panels = self.query_one("#panels", Horizontal)
@@ -467,7 +520,12 @@ class TerminalApp(App[None]):
         self._status(f"Find {self.search_index + 1}/{len(self.search_matches)} at {match.timestamp} ({match.port}); before={bounds.before}, after={bounds.after}.{mode}")
 
     def _status(self, text: str) -> None:
-        self.query_one("#status", Label).update(text)
+        self.query_one("#status", Label).update(self._policy_status(text))
+
+    def _policy_status(self, text: str) -> str:
+        raw = "RAW SHOWN" if self.display_policy.raw_lines else "RAW HIDDEN"
+        mac = "MAC:FULL" if self.display_policy.mac_mode == "full" else f"MAC:{self.display_policy.mac_mode}"
+        return f"{raw} | {mac} | {text}"
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.worker.name != "tagged-snapshot":

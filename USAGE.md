@@ -113,6 +113,34 @@ toggle is required to recover evidence. The leading ISO-8601 UTC timestamp is
 the host capture clock. A derived `device elapsed: N ms` value is the device
 clock from that record, not a host timestamp.
 
+### Session-only density controls
+
+Use these case-sensitive keys while viewing the panels:
+
+| Key | Visible mode | Behavior |
+| --- | --- | --- |
+| `i` | `RAW SHOWN` / `RAW HIDDEN` | Toggle raw rows for interpreted events globally. Press again to recover the normal two-line projection. |
+| `m` | `MAC:4` | Show the last two MAC octets; press `m` again for `MAC:FULL`. |
+| `M` | `MAC:6` | Show the last three MAC octets; press `M` again for `MAC:FULL`. |
+
+The controls apply to the current session only. A new invocation starts at
+`RAW SHOWN` and `MAC:FULL`; `m` and `M` remain distinct, and switching from
+one to the other replaces the active mode. The status line reports the active
+raw and MAC modes so recovery is explicit.
+
+These are presentation controls, not redaction. Raw bytes are decoded and
+logged by the reader exactly as before, and the original `PortEvent.text`
+remains authoritative. Filters, search, tags, markers, snapshots, exports,
+pause, zoom, retention, evidence, candidate identities, source references,
+and review records are unaffected. Only valid interpreted six-octet MAC fields
+are shortened; malformed, absent, raw, and uninterpreted values remain as
+provided.
+
+With `RAW HIDDEN`, a parsed event keeps its derived line and its marker follows
+the event onto that line. Unknown, malformed, ANSI-bearing, or control-bearing
+input always retains its exact raw line and `Uninterpreted` label. Continuous
+raw logs remain the recovery path for complete capture.
+
 Interpretation is deliberately exact and single-line only:
 
 ```text
@@ -128,11 +156,85 @@ input, and incomplete records remain raw and are labeled `Uninterpreted`.
 Input is never stripped, rewritten, or reconstructed; Rich styling is not
 allowed to treat input ANSI/control sequences as instructions.
 
-This projection describes one port at a time. It intentionally does not
-interpret inter-port communication, infer graph/MAC/ROLE/PORT topology,
-correlate PASS/FAIL outcomes, or generate reports. Use the raw per-port logs
-for authoritative evidence; find, filters, tags, markers, pause/zoom,
-retention, and tagged snapshots continue to use the original raw event.
+This projection describes one port at a time. It intentionally does not infer
+cross-line communication or graph/MAC/ROLE/PORT topology, correlate PASS/FAIL
+outcomes, or generate reports. Use the raw per-port logs for authoritative
+evidence; find, filters, tags, markers, pause/zoom, retention, and tagged
+snapshots continue to use the original raw event.
+
+## Explicit identity and evidence decisions
+
+The current interpreted projection identifies source, destination, and role
+when the record provides sufficient evidence. It parses canonical identity and
+explicit `type`, `from`, and `to` fields, then renders their metadata
+conservatively. For example:
+
+```text
+WARN GW:1E:B4 RCV evt=FAKE_QUEUED sample=1234 attempt=1/3
+WARN GW:1E:B4 RCV evt=HS type=1 meaning=HANDSHAKE
+```
+
+Do not manufacture fields when the record does not support them. Unknown or
+conflicting evidence remains visible, and the raw record remains authoritative.
+After identity is observed, the matching port title is updated with the
+observed device ID and role.
+
+The firmware role is selected from the latched GPIO4 switch: GPIO4 high means
+gateway and low means edge. Infer roles from explicit runtime logs, not solely
+from a USB/JTAG `/dev/serial/by-id` identifier and not from weak message
+heuristics. If evidence is missing or disagrees, show `ROLE=?` or mark it
+`CONFLICTING`; never silently choose a role.
+
+After the Wi-Fi MAC is explicitly observed or configured, the serial header
+should expose the physical port and a short MAC-derived device ID, for example:
+
+```text
+PORT 1 | /dev/ttyACM0 | DEV 1E:B4 | ROLE=GW
+```
+
+Do not equate USB serial numbers with Wi-Fi MACs. Verified firmware already
+emits one startup record from `handshake_init()`
+(`espnow_example_main.c:1992-2013`):
+
+```text
+GPIO8 initial device=<MAC> role=<gateway|edge> level=... request=...
+```
+
+This existing record is the implementation point for a recommended, separate
+firmware change. Normalize or rename it into one canonical startup identity
+record rather than adding a duplicate line, using the already latched role and
+already-read Wi-Fi MAC:
+
+```text
+INFO identity: device=<MAC> role=gateway role_source=gpio4_latched gpio4=HIGH
+```
+
+GPIO8 is a degraded-mode request/output concept, not the source of identity;
+its current `level` and `request` values may be preserved separately, for
+example as `degraded_request=...`. The firmware change must not resample GPIO4,
+change protocol state, or enable runtime role switching. The existing LED role
+indicator is not sufficient for serial-log correlation. This documentation
+does not claim that firmware change is implemented.
+
+Apply these evidence labels to interpreted claims:
+
+| Label | Meaning |
+| --- | --- |
+| `OBSERVED` | Directly present in captured evidence. |
+| `DECLARED` | Explicitly stated by the device or operator. |
+| `CORRELATED` | Joined by explicit shared evidence such as MAC, session, delivery ID, or correlation. |
+| `UNKNOWN` | Not established by available evidence. |
+| `CONFLICTING` | Incompatible evidence is present and must remain visible. |
+
+No `PASS`/`FAIL` or topology claim is valid without explicit evidence. See
+[MSG_TYPE.md](MSG_TYPE.md) for the gateway/edge wire types and for why
+`EDGE_PACKET`/`DATA_MESSAGE` are wire types while `FAKE_DATA` is diagnostic
+payload labeling.
+
+The current implementation does not infer topology across lines. Unsupported
+values remain `?` or `UNKNOWN`, conflicts remain `CONFLICTING`, and no
+`PASS`/`FAIL` claim is produced without explicit evidence. Raw events remain
+authoritative; interpreted metadata is only a conservative projection.
 
 ## Retention boundary
 

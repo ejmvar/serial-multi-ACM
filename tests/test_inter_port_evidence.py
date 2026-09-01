@@ -2,6 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from serial_terminal.formatting import DisplayPolicy
 from serial_terminal.inter_port_evidence import (
     CandidateLink,
     Evidence,
@@ -249,3 +250,77 @@ def test_render_preview_is_sorted_byte_stable_and_exposes_uncertainty_without_ve
     assert "candidate" in first
     assert "12:00:00Z" in first and "12:00:01Z" in first
     assert all(word not in first for word in ("PASS", "FAIL", "causal", "complete", "fault", "graph", "report", "live-state"))
+
+
+def test_render_preview_shortens_human_facing_cells_without_changing_authority() -> None:
+    histories = {
+        "peer-port": [
+            entry("peer-port", 4, "2026-08-31T12:00:04Z", "I (2) app: ESP-NOW RX raw peer=AA:BB:CC:DD:EE:FF"),
+        ],
+        "station-port": [
+            entry("station-port", 1, "2026-08-31T12:00:01Z", "I (1) wifi: Wi-Fi station-MAC AA:BB:CC:DD:EE:FF"),
+        ],
+    }
+    inventory = inventory_evidence(histories)
+    candidates = generate_candidates(inventory)
+    review = record_review((candidates[0],), candidates[0].identity, "accepted", "operator", "2026-08-31T12:01:00Z")
+    policy = DisplayPolicy(mac_mode="4")
+
+    default_output = render_preview(inventory, candidates, (review,))
+    shortened = render_preview(inventory, candidates, (review,), policy)
+
+    assert shortened != default_output
+    assert "dd:ee:ff" in shortened
+    assert "ee:ff" in shortened
+    assert "mac=ee:ff" in shortened
+    assert candidates[0].mac == "aa:bb:cc:dd:ee:ff"
+    assert candidates[0].identity in shortened
+    assert ",".join(f"{port}:{index}:{timestamp}" for port, index, timestamp in candidates[0].sources) in shortened
+    assert review.candidate_id == candidates[0].identity
+    assert review.candidate_id in shortened
+    assert "AA:BB:CC:DD:EE:FF" in inventory[0].fields.raw_text
+    assert "AA:BB:CC:DD:EE:FF" in inventory[1].fields.raw_text
+
+
+def test_render_preview_preserves_invalid_and_absent_mac_cells() -> None:
+    inventory = (
+        Evidence(
+            ("port-a", 0, "2026-08-31T12:00:00Z"),
+            "OBSERVED",
+            EvidenceFields(raw_text="raw", station_mac="not-a-mac", peer_mac=None),
+        ),
+    )
+
+    rendered = render_preview(inventory, (), policy=DisplayPolicy(mac_mode="6"))
+
+    assert "not-a-mac" in rendered
+    assert " | - | " in rendered
+
+
+def test_display_policy_cannot_change_evidence_candidates_reviews_or_default_export() -> None:
+    histories = {
+        "peer-port": [
+            entry("peer-port", 4, "2026-08-31T12:00:04Z", "I (2) app: ESP-NOW RX raw peer=AA:BB:CC:DD:EE:FF"),
+        ],
+        "station-port": [
+            entry("station-port", 1, "2026-08-31T12:00:01Z", "I (1) wifi: Wi-Fi station-MAC AA:BB:CC:DD:EE:FF"),
+        ],
+    }
+    evidence = inventory_evidence(histories)
+    candidates = generate_candidates(evidence)
+    review = record_review((candidates[0],), candidates[0].identity, "accepted", "operator", "2026-08-31T12:01:00Z")
+    default_before = render_preview(evidence, candidates, (review,))
+    authoritative_before = (evidence, candidates, (review,))
+
+    shortened = render_preview(evidence, candidates, (review,), DisplayPolicy(mac_mode="6"))
+
+    assert shortened != default_before
+    assert render_preview(*authoritative_before) == default_before
+    assert (evidence, candidates, (review,)) == authoritative_before
+    assert candidates[0].identity.startswith("local=station-port;peer=peer-port;mac=aa:bb:cc:dd:ee:ff")
+    assert candidates[0].sources == (evidence[0].source, evidence[1].source)
+    assert review.candidate_id == candidates[0].identity
+    assert {item.fields.raw_text for item in evidence} == {
+        "I (1) wifi: Wi-Fi station-MAC AA:BB:CC:DD:EE:FF",
+        "I (2) app: ESP-NOW RX raw peer=AA:BB:CC:DD:EE:FF",
+    }

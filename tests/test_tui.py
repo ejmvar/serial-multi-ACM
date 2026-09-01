@@ -385,3 +385,166 @@ def test_marker_data_separation_covers_logs_snapshots_search_filters_and_pause(m
             assert app.search_filter.source == "needle"
 
     asyncio.run(exercise())
+
+
+def test_display_controls_start_fresh_and_keep_case_sensitive_bindings_visible(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["port"], PortSettings(), tmp_path)
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            assert app.display_policy.raw_lines is True
+            assert app.display_policy.mac_mode == "full"
+            assert "RAW SHOWN" in app.query_one("#status", Label).render().plain
+            assert "MAC:FULL" in app.query_one("#status", Label).render().plain
+            labels = {binding.key: binding.description for binding in app.BINDINGS}
+            assert labels["i"] == "Hide interpreted raw"
+            assert labels["m"] == "MAC:4"
+            assert labels["M"] == "MAC:6"
+
+            await pilot.press("m")
+            assert app.display_policy.mac_mode == "4"
+            assert "MAC:4" in app.query_one("#status", Label).render().plain
+            await pilot.press("m")
+            assert app.display_policy.mac_mode == "full"
+            await pilot.press("M")
+            assert app.display_policy.mac_mode == "6"
+            await pilot.press("M")
+            assert app.display_policy.mac_mode == "full"
+            await pilot.press("i")
+            assert app.display_policy.raw_lines is False
+            assert "RAW HIDDEN" in app.query_one("#status", Label).render().plain
+
+    asyncio.run(exercise())
+
+
+def test_display_policy_redraws_all_live_history_and_context_panels_without_changing_selection(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["a", "b"], PortSettings(), tmp_path)
+    interpreted = "I (12) boot: peer 14:c1:9f:3b:1e:b4"
+    unknown = "raw 14:c1:9f:3b:1e:b4"
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            first, second = app.query(PortView)
+            for view in (first, second):
+                app.post_message(app.ReaderUpdate(PortEvent(view.port, "data", "2026-08-25T00:00:00+00:00", interpreted)))
+                app.post_message(app.ReaderUpdate(PortEvent(view.port, "data", "2026-08-25T00:00:01+00:00", unknown)))
+            await pilot.pause()
+            await pilot.press("f", *"peer", "enter")
+            assert len(app.search_matches) == 2
+            selected = (app.search_matches[app.search_index].port, app.search_matches[app.search_index].index)
+            await pilot.press("i")
+            assert (app.search_matches[app.search_index].port, app.search_matches[app.search_index].index) == selected
+            for view in (first, second):
+                lines = [line.text for line in view.query_one(RichLog).lines]
+                assert any("↳ INFO boot" in line for line in lines)
+                assert not any(interpreted in line for line in lines)
+                assert any(unknown in line for line in lines)
+                assert any(line == "↳ Uninterpreted" for line in lines)
+            await pilot.press("j")
+            assert app.search_index == 1
+            await pilot.press("a", "l")
+            assert app.global_context.after == 15
+            await pilot.press("i")
+            assert app.display_policy.raw_lines is True
+            assert app.search_index == 1
+
+    asyncio.run(exercise())
+
+
+def test_display_controls_preserve_pause_zoom_hidden_and_marker_semantics(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["hidden", "visible"], PortSettings(), tmp_path)
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            hidden, visible = app.query(PortView)
+            visible.focus()
+            visible.write_event(PortEvent("visible", "data", "0", "I (1) boot: ready"))
+            hidden.write_event(PortEvent("hidden", "data", "0", "raw value"))
+            visible.set_paused(True)
+            await pilot.press("z")
+            await pilot.press("i", "m")
+            assert visible.paused is True
+            assert app.zoomed_port == "visible"
+            assert not hidden.display
+            assert len(hidden.history) == 1
+            assert hidden.query_one(RichLog).lines[0].text.startswith("0 hidden")
+            assert visible.marker_texts() == ["- ↳ INFO boot | device elapsed: 1 ms"]
+            await pilot.press("escape")
+            assert app.zoomed_port is None
+            assert hidden.display and visible.display
+
+    asyncio.run(exercise())
+
+
+def test_display_controls_are_semantic_noops_for_raw_logs_filters_tags_snapshots_and_retention(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["port"], PortSettings(), tmp_path / "snapshots-before")
+    raw_log = StringIO()
+    emitted: list[PortEvent] = []
+    reader = SerialReader("port", PortSettings(), tmp_path, emitted.append)
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            reader._emit("data", "I (7) app: peer AA:BB:CC:DD:EE:FF", raw_log)
+            app.on_terminal_app_reader_update(app.ReaderUpdate(emitted[0]))
+            raw_bytes = b"raw \xff marker"
+            tagged = PortEvent(
+                "port", "data", "2026-08-25T00:00:01+00:00",
+                raw_bytes.decode("utf-8", errors="replace"), frozenset({"a"})
+            )
+            app.on_terminal_app_reader_update(app.ReaderUpdate(tagged))
+            app.search_filter = LineFilter.parse("#a")
+            app.global_filter = LineFilter.parse("peer")
+            app._reconcile_selection()
+            view = app.query_one(PortView)
+            before_history = tuple(view.history)
+            before_filters = (app.search_filter.source, app.global_filter.source)
+            before_raw_log = raw_log.getvalue()
+            before_snapshot = save_tagged_snapshots(app.log_dir, {"port": before_history})
+            before_snapshot_bytes = (before_snapshot.written[0][0]).read_bytes()
+
+            await pilot.press("i", "m", "M", "M")
+
+            assert tuple(view.history) == before_history
+            assert (app.search_filter.source, app.global_filter.source) == before_filters
+            assert view.history[1].tags == frozenset({"a"})
+            assert view.history[1].text == raw_bytes.decode("utf-8", errors="replace")
+            assert app.display_policy.raw_lines is False
+            assert app.display_policy.mac_mode == "full"
+            assert raw_log.getvalue() == before_raw_log
+            assert "I (7) app: peer AA:BB:CC:DD:EE:FF" in before_raw_log
+
+            after_dir = tmp_path / "snapshots-after"
+            after = save_tagged_snapshots(after_dir, {"port": tuple(view.history)})
+            assert after.written
+            assert after.written[0][0].read_bytes() == before_snapshot_bytes
+            view.set_paused(True)
+            app.on_terminal_app_reader_update(
+                app.ReaderUpdate(PortEvent("port", "data", "2026-08-25T00:00:02+00:00", "paused"))
+            )
+            assert tuple(view.history) == before_history
+
+    asyncio.run(exercise())
+
+
+def test_port_title_updates_from_canonical_identity_without_changing_raw_event(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["/dev/ttyACM0"], PortSettings(), tmp_path)
+
+    async def exercise() -> None:
+        async with app.run_test():
+            view = app.query_one(PortView)
+            assert view.query_one(Label).render().plain == "/dev/ttyACM0 | DEV ? | ROLE=?"
+            line = "I (1) handshake: identity: device=14:c1:9f:3b:1e:b4 role=gateway role_source=gpio4_latched degraded_request=released"
+            view.write_event(PortEvent(view.port, "data", "0", line))
+            assert view.query_one(Label).render().plain == "/dev/ttyACM0 | DEV 1E:B4 | ROLE=GW"
+            assert view.history[0].text == line
+
+    asyncio.run(exercise())

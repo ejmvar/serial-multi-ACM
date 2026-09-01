@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import re
 from typing import Literal
 
+from serial_terminal.formatting import DEFAULT_DISPLAY_POLICY, DisplayPolicy, format_mac
+
 
 SourceRef = tuple[str, int, str]
 EvidenceStatus = Literal["OBSERVED", "UNINTERPRETED"]
@@ -222,10 +224,20 @@ def _field_text(value: object) -> str:
     return "-" if value is None else str(value)
 
 
+def _candidate_label(candidate: CandidateLink, policy: DisplayPolicy) -> str:
+    return ";".join((
+        f"local={candidate.local_port}",
+        f"peer={candidate.peer_port}",
+        f"mac={_field_text(format_mac(candidate.mac, policy))}",
+        f"direction={candidate.direction}",
+    ))
+
+
 def render_preview(
     inventory: Sequence[Evidence],
     candidates: Sequence[CandidateLink],
     reviews: Sequence[ReviewRecord] = (),
+    policy: DisplayPolicy = DEFAULT_DISPLAY_POLICY,
 ) -> str:
     """Render the deterministic aligned-list representation for UI/export use."""
 
@@ -241,16 +253,24 @@ def render_preview(
             " | ".join((
                 item.source[2], item.source[0], str(item.source[1]), item.status,
                 _field_text(fields.device_elapsed), _field_text(fields.role_state),
-                _field_text(fields.station_mac), _field_text(fields.peer_mac),
+                _field_text(format_mac(fields.station_mac, policy)),
+                _field_text(format_mac(fields.peer_mac, policy)),
                 _field_text(fields.direction), _field_text(fields.protocol),
                 _field_text(fields.bind_state), _field_text(fields.sample_id),
                 _field_text(fields.result), fields.raw_text,
             ))
         )
 
-    lines.extend(("CANDIDATES", "status | identity | sources"))
+    candidate_header = "status | identity | sources"
+    if policy.mac_mode != "full":
+        candidate_header = "status | label | identity | sources"
+    lines.extend(("CANDIDATES", candidate_header))
     for candidate in sorted(candidates, key=lambda item: item.identity):
-        lines.append(f"{candidate.status} | {candidate.identity} | {','.join(map(_source_text, candidate.sources))}")
+        source_text = ",".join(map(_source_text, candidate.sources))
+        if policy.mac_mode == "full":
+            lines.append(f"{candidate.status} | {candidate.identity} | {source_text}")
+        else:
+            lines.append(f"{candidate.status} | {_candidate_label(candidate, policy)} | {candidate.identity} | {source_text}")
 
     lines.extend(("REVIEWS", "decision | candidate_id | reviewer | decided_at | sources"))
     for review in sorted(reviews, key=lambda item: (item.candidate_id, item.decided_at, item.reviewer, item.decision)):
