@@ -101,20 +101,32 @@ authoritative, and unsupported values stay visible as `?` or `UNKNOWN`;
 
 ## Shortcuts
 
+The keymap is rendered as a deterministic two-line bottom widget. Its semantic
+key pairs are arranged vertically; remaining actions are shown compactly on the
+second line.
+
+| Lowercase | Uppercase | Behavior |
+| --- | --- | --- |
+| `p` | `P` | `p`: Port filter. `P`: Pause the selected port. |
+| `i` | `I` | `i`: Toggle interpreted raw. `I`: Force show interpreted raw. |
+| `f` | `F` | `f`: Find history. `F`: Clear find and restore retained history. |
+| `b` | `B` | `b`: Adjust before. `B`: Reset before to 10. |
+| `a` | `A` | `a`: Adjust after. `A`: Reset after to 10. |
+
 | Key | Action |
 | --- | --- |
 | `Space` | Pause or resume all visual panels; disk logging continues. |
-| `Shift+p` | Pause or resume the selected port panel. |
+| `P` | Pause or resume the selected port panel. |
 | `Tab` / `1`–`9` | Focus and select a port panel. When that port is zoomed, press its number again to restore the side-by-side layout. |
 | `z` | Zoom the focused port to fill the available terminal; press again to restore the side-by-side layout. |
-| `f` | Search retained displayed history, using case-insensitive plain text or `/regex/`; this does not change live filters. |
-| `i` | Toggle interpreted raw lines; status shows `RAW SHOWN` or `RAW HIDDEN`. Uninterpreted raw lines are never hidden. |
+| `f` | Search retained displayed history, using case-insensitive plain text or `/regex/`; this does not change live filters. `F` clears find and restores retained history. |
+| `i` | Toggle interpreted raw lines; status shows `RAW SHOWN` or `RAW HIDDEN`. Uninterpreted raw lines are never hidden. `I` forces interpreted raw lines to show. |
 | `m` / `M` | Select `MAC:4` (last two octets) / `MAC:6` (last three octets). Press the active key again for `MAC:FULL`; modes are session-only. |
 | `t` then `1`–`9` / `T` then `a`–`z` | Assign a numeric / letter correlation tag to the active retained event. |
 | `u` then `1`–`9` / `U` then `a`–`z` | Remove only that numeric / letter tag from the active retained event. |
 | `S` | Save one non-overwriting tagged snapshot per port in the log directory. |
 | `j` / `k` | Next / previous search result (when not adjusting context); visible panels align to its timestamp. |
-| `a` / `b` | Adjust AFTER / BEFORE context around search results. In adjustment mode, `j`/`k` change by +1/-1 and `h`/`l` by -5/+5; `Escape` exits the mode. Bounds never go below zero. Global bounds apply side-by-side; zoom changes only the selected-port bounds. |
+| `a` / `b` | Adjust AFTER / BEFORE context around search results. `A` / `B` reset AFTER / BEFORE to 10. In adjustment mode, `j`/`k` change by +1/-1 and `h`/`l` by -5/+5; `Escape` exits the mode. Bounds never go below zero. Global bounds apply side-by-side; zoom changes only the selected-port bounds. |
 | `g` | Set or clear the global live display filter. |
 | `p` | Set or clear the selected-port live display filter. |
 | `Enter` | Apply the active find or live filter. Plain text is case-insensitive; `/pattern/` is a case-insensitive regex. |

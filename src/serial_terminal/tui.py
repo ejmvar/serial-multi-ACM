@@ -11,7 +11,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.message import Message
-from textual.widgets import Footer, Header, Input, Label, RichLog, Static
+from textual.widgets import Header, Input, Label, RichLog, Static
 from textual.worker import Worker, WorkerState
 
 from .filters import LineFilter, is_visible
@@ -22,6 +22,19 @@ from .snapshots import SnapshotResult, save_tagged_snapshots
 
 
 EventRef = tuple[str, int]
+
+
+def _render_keymap(columns: tuple[tuple[str, str], ...]) -> tuple[str, str]:
+    """Render semantic keymap columns with delimiters at stable positions."""
+    widths = tuple(max(len(cell) for cell in column) for column in columns)
+
+    def render_row(row: tuple[str, ...]) -> str:
+        return "".join(f"|{cell:<{width}}" for cell, width in zip(row, widths)) + "|"
+
+    return (
+        render_row(tuple(column[0] for column in columns)),
+        render_row(tuple(column[1] for column in columns)),
+    )
 
 
 def resolve_marker(ref: EventRef, latest: EventRef | None, selected: EventRef | None) -> str:
@@ -160,6 +173,26 @@ class PortView(Static):
         self._projection(list(enumerate(self.history)))
 
 
+class KeymapWidget(Static):
+    """Deterministic two-line keymap for the actions exposed by the app."""
+
+    COLUMNS = (
+        ("p Port filter", "P Pause port"),
+        ("i Hide raw", "I Show raw"),
+        ("f Find history", "F Clear find"),
+        ("b Adjust before", "B Reset before"),
+        ("a Adjust after", "A Reset after"),
+        ("space Pause all", "g Global filter"),
+        ("m/M MAC", "t/T/U Tags"),
+        ("z Zoom", "S Snapshots"),
+        ("j/k Navigate", "esc/q Exit"),
+    )
+    ROWS = _render_keymap(COLUMNS)
+
+    def __init__(self) -> None:
+        super().__init__("\n".join(self.ROWS), markup=False, id="keymap")
+
+
 class TerminalApp(App[None]):
     """Thread-safe multi-port serial terminal."""
 
@@ -174,15 +207,20 @@ class TerminalApp(App[None]):
     #filter { dock: bottom; display: none; }
     #filter.visible { display: block; }
     #status { dock: bottom; height: 1; padding-left: 1; }
+    #keymap { dock: bottom; height: 2; padding-left: 1; }
     """
     BINDINGS = [
         Binding("space", "toggle_global_pause", "Pause all"),
         Binding("P", "toggle_port_pause", "Pause port"),
+        Binding("I", "show_raw_lines", "Show interpreted raw"),
         Binding("f", "edit_search", "Find history"),
+        Binding("F", "clear_search", "Clear find"),
         Binding("g", "edit_global_filter", "Global filter"),
         Binding("p", "edit_port_filter", "Port filter"),
         Binding("a", "edit_after_context", "After context"),
+        Binding("A", "reset_after_context", "Reset after"),
         Binding("b", "edit_before_context", "Before context"),
+        Binding("B", "reset_before_context", "Reset before"),
         Binding("t", "start_numeric_tag", "Tag 1-9"),
         Binding("T", "start_letter_tag", "Tag a-z"),
         Binding("u", "start_numeric_untag", "Untag 1-9"),
@@ -229,7 +267,7 @@ class TerminalApp(App[None]):
                 yield PortView(port)
         yield Input(placeholder="Find text, or /regex/", id="filter")
         yield Label(self._policy_status("Ready. Focus a port with Tab or 1-9."), id="status")
-        yield Footer()
+        yield KeymapWidget()
 
     def on_mount(self) -> None:
         self._port_view(self.selected_port).focus()
@@ -310,6 +348,11 @@ class TerminalApp(App[None]):
         self._redraw_visible()
         self._status("Interpreted raw lines hidden." if not self.display_policy.raw_lines else "Interpreted raw lines shown.")
 
+    def action_show_raw_lines(self) -> None:
+        self.display_policy = replace(self.display_policy, raw_lines=True)
+        self._redraw_visible()
+        self._status("Interpreted raw lines shown.")
+
     def action_select_mac_short(self) -> None:
         self._select_mac("m")
 
@@ -346,11 +389,30 @@ class TerminalApp(App[None]):
     def action_edit_search(self) -> None:
         self._show_filter("search", self.search_filter.source if self.search_filter else "")
 
+    def action_clear_search(self) -> None:
+        """Clear only retained-history search state, preserving live filters."""
+        self.search_filter = None
+        self.search_matches = []
+        self.search_index = 0
+        self.context_target = None
+        self.filter_target = None
+        input_ = self.query_one(Input)
+        input_.remove_class("visible")
+        self.set_focus(None)
+        self._redraw_visible()
+        self._status("Search cleared; retained visual history restored.")
+
     def action_edit_after_context(self) -> None:
         self._activate_context("after")
 
     def action_edit_before_context(self) -> None:
         self._activate_context("before")
+
+    def action_reset_before_context(self) -> None:
+        self._reset_context("before")
+
+    def action_reset_after_context(self) -> None:
+        self._reset_context("after")
 
     def action_start_numeric_tag(self) -> None:
         self._start_tag_mode("numeric", removing=False)
@@ -505,6 +567,20 @@ class TerminalApp(App[None]):
         else:
             self.global_context = self._active_context().adjusted(self.context_target, amount)
         self._show_search_result()
+
+    def _reset_context(self, target: str) -> None:
+        """Reset one bound in the active scope without creating a search."""
+        bounds = self._active_context()
+        default = ContextBounds()
+        updated = replace(bounds, **{target: getattr(default, target)})
+        if self.zoomed_port:
+            self.port_contexts[self.selected_port] = updated
+        else:
+            self.global_context = updated
+        if self.search_filter is not None and self.search_matches:
+            self._show_search_result()
+        else:
+            self._status(f"{target.upper()} context reset to 10.")
 
     def _show_search_result(self) -> None:
         match = self.search_matches[self.search_index]

@@ -9,6 +9,20 @@ Tag related gateway and edge messages while they are still in retained display h
 3. Press `f`, type `#a`, and press `Enter`; use `j` and `k` to follow every tagged record across panels.
 4. Press `S` to create one non-overwriting `*-tagged.log` study file for every port.
 
+## Keymap
+
+The keymap is rendered as a deterministic two-line bottom widget. The semantic
+key pairs are arranged vertically, while remaining actions are shown compactly
+on the second line.
+
+| Lowercase | Uppercase | Behavior |
+| --- | --- | --- |
+| `p` | `P` | `p`: Port filter. `P`: Pause the selected port. |
+| `i` | `I` | `i`: Toggle interpreted raw. `I`: Force show interpreted raw. |
+| `f` | `F` | `f`: Find history. `F`: Clear find and restore retained history. |
+| `b` | `B` | `b`: Adjust before. `B`: Reset before to 10. |
+| `a` | `A` | `a`: Adjust after. `A`: Reset after to 10. |
+
 ## Example: one gateway and two edges
 
 Run a three-panel session:
@@ -53,9 +67,10 @@ While this find is active, `T`, `a` applies `#a` to the **current find match**, 
 | `f`, `#a`, `Enter` | Follow every event carrying tag `a` across ports. |
 | `f`, `/pattern/`, `Enter` | Run a case-insensitive regex against message text and tag labels. |
 | `j` / `k` | Move to next / previous find result. |
-| `a` / `b` | Start AFTER / BEFORE context adjustment for the current result. |
+| `a` / `b` | Start AFTER / BEFORE context adjustment for the current result; `A` / `B` reset the corresponding bound to 10. |
 | In context mode: `j` / `k`, `h` / `l` | Adjust by `+1` / `-1`, or `-5` / `+5` lines. |
-| `Escape` | Exit context mode; later `Escape` clears find and restores normal retained history. |
+| `F` | Clear find and restore retained history. |
+| `Escape` | Exit context mode; later `Escape` also clears find and restores normal retained history. |
 
 In side-by-side view, context bounds apply to every displayed panel. In a zoomed panel, adjustments apply only to that port.
 
@@ -120,6 +135,7 @@ Use these case-sensitive keys while viewing the panels:
 | Key | Visible mode | Behavior |
 | --- | --- | --- |
 | `i` | `RAW SHOWN` / `RAW HIDDEN` | Toggle raw rows for interpreted events globally. Press again to recover the normal two-line projection. |
+| `I` | `RAW SHOWN` | Force interpreted raw rows to show. |
 | `m` | `MAC:4` | Show the last two MAC octets; press `m` again for `MAC:FULL`. |
 | `M` | `MAC:6` | Show the last three MAC octets; press `M` again for `MAC:FULL`. |
 

@@ -3,12 +3,13 @@ from io import StringIO
 from pathlib import Path
 
 from textual.containers import Horizontal
-from textual.widgets import Label, RichLog
+from textual.widgets import Label, RichLog, Static
 
 from serial_terminal.filters import LineFilter
 from serial_terminal.reader import PortEvent, PortSettings, SerialReader
 from serial_terminal.snapshots import save_tagged_snapshots
-from serial_terminal.tui import PortView, TerminalApp, resolve_marker
+from serial_terminal.search import ContextBounds
+from serial_terminal.tui import KeymapWidget, PortView, TerminalApp, resolve_marker
 
 
 def test_resolve_marker_combines_latest_and_selected_identity() -> None:
@@ -17,6 +18,83 @@ def test_resolve_marker_combines_latest_and_selected_identity() -> None:
     assert resolve_marker(("port", 1), latest, latest) == ""
     assert resolve_marker(latest, latest, ("other", 0)) == "-"
     assert resolve_marker(("port", 1), latest, ("port", 1)) == "+"
+
+
+def test_keymap_is_two_deterministic_lines() -> None:
+    assert len(KeymapWidget.ROWS) == 2
+    assert all("\t" not in row for row in KeymapWidget.ROWS)
+
+    first, second = KeymapWidget.ROWS
+    delimiters = [index for index, char in enumerate(first) if char == "|"]
+    assert delimiters == [index for index, char in enumerate(second) if char == "|"]
+
+    for index, (lower, upper) in enumerate(KeymapWidget.COLUMNS[:5]):
+        start, end = delimiters[index], delimiters[index + 1]
+        assert first[start + 1 : end].startswith(lower)
+        assert second[start + 1 : end].startswith(upper)
+
+    assert "space Pause all" in first
+    assert "g Global filter" in second
+    assert "m/M MAC" in first
+    assert "t/T/U Tags" in second
+    assert "z Zoom" in first
+    assert "S Snapshots" in second
+    assert "j/k Navigate" in first
+    assert "esc/q Exit" in second
+
+
+def test_keymap_is_rendered_at_two_lines(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["port"], PortSettings(), tmp_path)
+
+    async def exercise() -> None:
+        async with app.run_test():
+            bindings = {binding.key: binding.action for binding in app.BINDINGS}
+            assert bindings["I"] == "show_raw_lines"
+            assert bindings["F"] == "clear_search"
+            assert bindings["B"] == "reset_before_context"
+            assert bindings["A"] == "reset_after_context"
+            keymap = app.query_one(KeymapWidget)
+            assert keymap.styles.height.value == 2
+            assert keymap.render().plain == "\n".join(KeymapWidget.ROWS)
+            assert isinstance(keymap, Static)
+
+    asyncio.run(exercise())
+
+
+def test_display_recovery_and_context_reset_bindings(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["port", "other"], PortSettings(), tmp_path)
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            view, other = app.query(PortView)
+            view.write_event(PortEvent("port", "data", "0", "needle"))
+            other.write_event(PortEvent("other", "data", "1", "needle"))
+            app.global_filter = LineFilter.parse("live")
+            app.port_filters["port"] = LineFilter.parse("port-only")
+            await pilot.press("i", "I")
+            assert app.display_policy.raw_lines is True
+            await pilot.press("f", *"needle", "enter")
+            assert app.search_filter is not None
+            await pilot.press("a", "l")
+            await pilot.press("b", "h")
+            assert app.global_context == ContextBounds(before=5, after=15)
+            await pilot.press("A")
+            assert app.global_context == ContextBounds(before=5, after=10)
+            await pilot.press("B")
+            assert app.global_context == ContextBounds()
+            await pilot.press("F")
+            assert app.search_filter is None
+            assert app.search_matches == []
+            assert app.context_target is None
+            assert app.filter_target is None
+            assert not app.query_one("#filter").has_class("visible")
+            assert app.global_filter is not None and app.global_filter.source == "live"
+            assert app.port_filters["port"] is not None and app.port_filters["port"].source == "port-only"
+            assert [line.text for line in view.query_one(RichLog).lines]
+
+    asyncio.run(exercise())
 
 
 def test_live_event_projection_does_not_rebuild_retained_history(monkeypatch, tmp_path: Path) -> None:
