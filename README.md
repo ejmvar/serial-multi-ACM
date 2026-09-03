@@ -108,6 +108,8 @@ second line.
 | Lowercase | Uppercase | Behavior |
 | --- | --- | --- |
 | `p` | `P` | `p`: Port filter. `P`: Pause the selected port. |
+| `c` | `C` | `c`: Clear all retained TUI history. `C`: Clear the selected port's retained TUI history. |
+| `o` | `O` | `o`: Toggle ORIGINAL-ONLY projection for all ports. `O`: Toggle it for the selected port. |
 | `i` | `I` | `i`: Toggle interpreted raw. `I`: Force show interpreted raw. |
 | `f` | `F` | `f`: Find history. `F`: Clear find and restore retained history. |
 | `b` | `B` | `b`: Adjust before. `B`: Reset before to 10. |
@@ -117,6 +119,10 @@ second line.
 | --- | --- |
 | `Space` | Pause or resume all visual panels; disk logging continues. |
 | `P` | Pause or resume the selected port panel. |
+| `c` | Clear all retained TUI history; reader threads and files in `--log-dir` are untouched. |
+| `C` | Clear only the selected port's retained TUI history; reader threads and files in `--log-dir` are untouched. |
+| `o` | Toggle all ports between the normal interpreted projection and ORIGINAL-ONLY projection. |
+| `O` | Toggle ORIGINAL-ONLY projection for the selected port only. |
 | `Tab` / `1`–`9` | Focus and select a port panel. When that port is zoomed, press its number again to restore the side-by-side layout. |
 | `z` | Zoom the focused port to fill the available terminal; press again to restore the side-by-side layout. |
 | `f` | Search retained displayed history, using case-insensitive plain text or `/regex/`; this does not change live filters. `F` clears find and restores retained history. |
@@ -150,6 +156,12 @@ An accepted displayed event moves `-` to the newest retained event. Filtered-out
 TX, RX, ACK, NACK, and common log levels are highlighted. Find also matches visible tag labels, so enter `#a` to follow tag `a` across ports. The active event is the current find match while search is active; otherwise it is the latest retained displayed event in the selected port. Live filters affect only new TUI lines, never the complete per-port log file. Each port retains up to 5,000 displayed lines for find/navigation; readers and disk logging continue independently. Tagged snapshots export this retained displayed history only, never hidden or already-discarded raw input.
 
 ### Session-only display controls
+
+The `c`, `C`, `o`, `O`, `i`, `m`, and `M` controls affect only the current visual
+session. `c` and `C` discard retained TUI rows but never delete or truncate
+files in `--log-dir`; reader disk logging continues. `o` and `O` show the exact
+raw event line without its derived interpreted line. They do not rewrite
+`PortEvent.text` or alter filters, snapshots, or evidence.
 
 The `i`, `m`, and `M` controls affect only the current visual projection. They
 reset for every new session and never change `PortEvent.text`, raw bytes after

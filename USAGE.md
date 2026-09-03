@@ -18,6 +18,8 @@ on the second line.
 | Lowercase | Uppercase | Behavior |
 | --- | --- | --- |
 | `p` | `P` | `p`: Port filter. `P`: Pause the selected port. |
+| `c` | `C` | `c`: Clear all retained TUI history. `C`: Clear the selected port's retained TUI history. |
+| `o` | `O` | `o`: Toggle ORIGINAL-ONLY for all ports. `O`: Toggle ORIGINAL-ONLY for the selected port. |
 | `i` | `I` | `i`: Toggle interpreted raw. `I`: Force show interpreted raw. |
 | `f` | `F` | `f`: Find history. `F`: Clear find and restore retained history. |
 | `b` | `B` | `b`: Adjust before. `B`: Reset before to 10. |
@@ -98,6 +100,24 @@ The marker is added only while rendering the visual panel. It is not stored in t
 - live filter matching or pause/retention decisions.
 
 Thus searching, filtering, pausing, eviction, logging, and snapshot contents use the original unmarked event and tag data.
+
+### Clear and original-only controls
+
+These controls are TUI-only and non-destructive:
+
+| Key | Result |
+| --- | --- |
+| `c` | Clears retained history and rendered rows in every panel. |
+| `C` | Clears retained history and rendered rows only in the selected panel. |
+| `o` | If any port is normal, sets every port to ORIGINAL-ONLY; otherwise restores every port's normal interpreted projection. |
+| `O` | Toggles ORIGINAL-ONLY for the selected port without changing other ports. |
+
+ORIGINAL-ONLY renders the exact raw event line and omits the derived interpreted
+line. None of these keys deletes or truncates files in `--log-dir`, stops reader
+threads, changes `PortEvent.text`, or changes live filters, search terms,
+snapshots, tags, markers, pause state, zoom, or evidence. Clearing only removes
+the retained TUI history available for later search or tagged snapshot export;
+continuous reader disk logging remains the recovery path.
 
 ## Export a tagged study snapshot
 

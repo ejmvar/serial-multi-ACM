@@ -34,6 +34,10 @@ def test_keymap_is_two_deterministic_lines() -> None:
         assert second[start + 1 : end].startswith(upper)
 
     assert "space Pause all" in first
+    assert "c Clear all" in first
+    assert "o Original all" in first
+    assert "C Clear port" in second
+    assert "O Original port" in second
     assert "g Global filter" in second
     assert "m/M MAC" in first
     assert "t/T/U Tags" in second
@@ -54,6 +58,10 @@ def test_keymap_is_rendered_at_two_lines(monkeypatch, tmp_path: Path) -> None:
             assert bindings["F"] == "clear_search"
             assert bindings["B"] == "reset_before_context"
             assert bindings["A"] == "reset_after_context"
+            assert bindings["c"] == "clear_all_history"
+            assert bindings["C"] == "clear_port_history"
+            assert bindings["o"] == "toggle_original_all"
+            assert bindings["O"] == "toggle_original_port"
             keymap = app.query_one(KeymapWidget)
             assert keymap.styles.height.value == 2
             assert keymap.render().plain == "\n".join(KeymapWidget.ROWS)
@@ -93,6 +101,81 @@ def test_display_recovery_and_context_reset_bindings(monkeypatch, tmp_path: Path
             assert app.global_filter is not None and app.global_filter.source == "live"
             assert app.port_filters["port"] is not None and app.port_filters["port"].source == "port-only"
             assert [line.text for line in view.query_one(RichLog).lines]
+
+    asyncio.run(exercise())
+
+
+def test_clear_history_is_tui_only_and_scoped(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["a", "b"], PortSettings(), tmp_path)
+    raw_log = StringIO()
+    emitted: list[PortEvent] = []
+    reader = SerialReader("a", PortSettings(), tmp_path, emitted.append)
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            for port in ("a", "b"):
+                app.on_terminal_app_reader_update(app.ReaderUpdate(PortEvent(port, "data", "0", f"{port}-before")))
+            reader._emit("data", "disk-before", raw_log)
+            app.select_port("b")
+            before_disk = raw_log.getvalue()
+
+            await pilot.press("C")
+            first, second = app.query(PortView)
+            assert first.history
+            assert second.history == []
+            assert second.query_one(RichLog).lines == []
+            assert raw_log.getvalue() == before_disk
+
+            await pilot.press("c")
+            assert first.history == []
+            assert first.query_one(RichLog).lines == []
+            assert second.history == []
+            assert raw_log.getvalue() == before_disk
+
+    asyncio.run(exercise())
+
+
+def test_original_only_scope_preserves_raw_filters_and_snapshots(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(SerialReader, "start", lambda self: None)
+    app = TerminalApp(["a", "b"], PortSettings(), tmp_path)
+    line = "I (7) app: peer AA:BB:CC:DD:EE:FF"
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            first, second = app.query(PortView)
+            for view in (first, second):
+                view.write_event(PortEvent(view.port, "data", "2026-08-25T00:00:00+00:00", line, frozenset({"a"})))
+            app.global_filter = LineFilter.parse("peer")
+            app.search_filter = LineFilter.parse("peer")
+            app._reconcile_selection()
+            before_history = tuple(first.history)
+            before_snapshot = save_tagged_snapshots(tmp_path / "before", {"a": before_history})
+            before_snapshot_bytes = before_snapshot.written[0][0].read_bytes()
+
+            await pilot.press("O")
+            assert app.original_only_ports == {"a"}
+            assert first.query_one(RichLog).lines[0].text.endswith(f"| {line} [#a]")
+            assert len(first.query_one(RichLog).lines) == 1
+            assert len(second.query_one(RichLog).lines) == 2
+            assert tuple(first.history) == before_history
+            assert app.global_filter.source == "peer"
+            assert app.search_filter.source == "peer"
+            after_snapshot = save_tagged_snapshots(tmp_path / "after", {"a": tuple(first.history)})
+            assert after_snapshot.written[0][0].read_bytes() == before_snapshot_bytes
+
+            await pilot.press("o")
+            assert app.original_only_ports == {"a", "b"}
+            await pilot.press("o")
+            assert app.original_only_ports == set()
+            await pilot.press("O")
+            assert app.original_only_ports == {"a"}
+            second.focus()
+            await pilot.pause()
+            await pilot.press("O")
+            assert app.original_only_ports == {"a", "b"}
+            await pilot.press("O")
+            assert app.original_only_ports == {"a"}
 
     asyncio.run(exercise())
 

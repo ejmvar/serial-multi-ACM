@@ -120,6 +120,7 @@ class PortView(Static):
                     event.tags,
                     marker=marker,
                     policy=self._display_policy(),
+                    original_only=self._original_only(),
                 )
             )
         self._latest_line_index = next(
@@ -145,11 +146,21 @@ class PortView(Static):
                 event.tags,
                 marker="-" if self.display else "",
                 policy=self._display_policy(),
+                original_only=self._original_only(),
             )
         )
 
     def _display_policy(self) -> DisplayPolicy:
         return self.app.display_policy if isinstance(self.app, TerminalApp) else DEFAULT_DISPLAY_POLICY
+
+    def _original_only(self) -> bool:
+        return isinstance(self.app, TerminalApp) and self.port in self.app.original_only_ports
+
+    def clear_history(self) -> None:
+        """Clear retained TUI history and rendered rows without touching the reader."""
+        self.history.clear()
+        self.query_one(RichLog).clear()
+        self._latest_line_index = None
 
     def marker_texts(self) -> list[str]:
         return [line.text for line in self.query_one(RichLog).lines if line.text.startswith(("- ", "+ ", "+- "))]
@@ -178,6 +189,8 @@ class KeymapWidget(Static):
 
     COLUMNS = (
         ("p Port filter", "P Pause port"),
+        ("c Clear all", "C Clear port"),
+        ("o Original all", "O Original port"),
         ("i Hide raw", "I Show raw"),
         ("f Find history", "F Clear find"),
         ("b Adjust before", "B Reset before"),
@@ -217,6 +230,10 @@ class TerminalApp(App[None]):
         Binding("F", "clear_search", "Clear find"),
         Binding("g", "edit_global_filter", "Global filter"),
         Binding("p", "edit_port_filter", "Port filter"),
+        Binding("c", "clear_all_history", "Clear all TUI history"),
+        Binding("C", "clear_port_history", "Clear selected TUI history"),
+        Binding("o", "toggle_original_all", "Original-only all ports"),
+        Binding("O", "toggle_original_port", "Original-only selected port"),
         Binding("a", "edit_after_context", "After context"),
         Binding("A", "reset_after_context", "Reset after"),
         Binding("b", "edit_before_context", "Before context"),
@@ -246,6 +263,7 @@ class TerminalApp(App[None]):
         self.log_dir = log_dir
         self.global_paused = False
         self.display_policy = DEFAULT_DISPLAY_POLICY
+        self.original_only_ports: set[str] = set()
         self.selected_port = ports[0]
         self.global_filter: LineFilter | None = None
         self.port_filters: dict[str, LineFilter | None] = {port: None for port in ports}
@@ -352,6 +370,48 @@ class TerminalApp(App[None]):
         self.display_policy = replace(self.display_policy, raw_lines=True)
         self._redraw_visible()
         self._status("Interpreted raw lines shown.")
+
+    def action_clear_all_history(self) -> None:
+        """Clear only retained rows in every TUI panel; readers keep logging."""
+        for view in self.query(PortView):
+            view.clear_history()
+        self.search_matches = []
+        self.search_index = 0
+        self._redraw_visible()
+        self._status("Cleared all TUI history; disk logging continues.")
+
+    def action_clear_port_history(self) -> None:
+        """Clear only the selected panel's retained rows; readers keep logging."""
+        view = self._port_view(self.selected_port)
+        view.clear_history()
+        if self.search_filter is not None:
+            self._reconcile_selection()
+        else:
+            self._redraw_visible()
+        self._status(f"Cleared {self.selected_port} TUI history; disk logging continues.")
+
+    def action_toggle_original_all(self) -> None:
+        """Toggle original-only projection for all ports without changing events."""
+        if self.original_only_ports == set(self.ports):
+            self.original_only_ports.clear()
+            state = "normal interpreted projection"
+        else:
+            self.original_only_ports = set(self.ports)
+            state = "ORIGINAL-ONLY projection"
+        self._redraw_visible()
+        self._status(f"All ports: {state}; TUI-only, raw events and logging unchanged.")
+
+    def action_toggle_original_port(self) -> None:
+        """Toggle original-only projection for the selected port only."""
+        port = self.selected_port
+        if port in self.original_only_ports:
+            self.original_only_ports.remove(port)
+            state = "normal interpreted projection"
+        else:
+            self.original_only_ports.add(port)
+            state = "ORIGINAL-ONLY projection"
+        self._redraw_visible()
+        self._status(f"{port}: {state}; TUI-only, raw events and logging unchanged.")
 
     def action_select_mac_short(self) -> None:
         self._select_mac("m")

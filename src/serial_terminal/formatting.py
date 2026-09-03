@@ -211,8 +211,9 @@ def render_record(
     *,
     marker: str = "",
     policy: DisplayPolicy = DEFAULT_DISPLAY_POLICY,
+    original_only: bool = False,
 ) -> Text:
-    """Render raw evidence followed by its conservative derived projection."""
+    """Render raw evidence, optionally omitting the derived projection."""
     suffix = f" [{format_tags(tags)}]" if tags else ""
     prefix = f"{marker} " if marker else ""
     parsed = parse_device_line(line)
@@ -241,7 +242,9 @@ def render_record(
             explanation = f": {parsed.explanation}" if parsed.explanation else ""
             derived = f"↳ {parsed.severity} {parsed.component} | device elapsed: {parsed.device_ms} ms{explanation}"
 
-    if parsed is not None and not policy.raw_lines:
+    if original_only:
+        rendered = f"{prefix}{timestamp} {port} | {line}{suffix}"
+    elif parsed is not None and not policy.raw_lines:
         rendered = f"{prefix}{derived}{suffix}"
     else:
         rendered = f"{prefix}{timestamp} {port} | {line}{suffix}\n{derived}"
