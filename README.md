@@ -7,9 +7,25 @@ A Textual terminal UI that reads and logs multiple serial ports concurrently. Ea
 ```bash
 uv run serial-terminal /dev/ttyACM0 /dev/ttyACM1
 uv run serial-terminal /dev/ttyACM0 --baudrate 9600 --bytesize 7 --parity E --stopbits 1.5 --timeout 0.5 --log-dir captures
+uv run serial-terminal /dev/ttyACM0 /dev/ttyACM1 /dev/ttyACM2 --log-dir captures
 ```
 
 Logs are written independently as `log_<sanitized-port>_<YYYYMMDD_HHMMSS>.log` in `log/` by default. Every record starts with an ISO-8601 UTC timestamp with milliseconds.
+
+## Reconnect behavior
+
+Readers stay alive through transient open/read failures and retry every second by default. Set the interval with `--reconnect-delay SECONDS` (it must be greater than zero). The configured port is the **logical** reader identity: `PortEvent.port`, the TUI panel, and the per-reader log file keep the original argument even when Linux assigns a different active device path.
+
+After the first successful open, the reader records the USB VID, PID, serial number, and location when available. On reconnect it prefers the configured path, then uses an exact, unique descriptor match. It never guesses when multiple devices match. Status messages include available `/dev/ttyACM*` and `/dev/ttyUSB*` paths so an operator can verify re-enumeration.
+
+### Manual verification
+
+```bash
+ls -l /dev/ttyACM* /dev/ttyUSB* /dev/serial/by-id/*
+uv run serial-terminal /dev/ttyACM0 /dev/ttyACM1 /dev/ttyACM2 --log-dir captures
+```
+
+Start the monitor, reset or unplug one device, then rerun the `ls` command. Confirm the TUI reports `Reconnected ... via ...` and that lines continue in the same logical per-reader log. These are manual verification instructions; no hardware test is claimed here.
 
 ## Human-readable projection
 

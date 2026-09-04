@@ -9,6 +9,19 @@ Tag related gateway and edge messages while they are still in retained display h
 3. Press `f`, type `#a`, and press `Enter`; use `j` and `k` to follow every tagged record across panels.
 4. Press `S` to create one non-overwriting `*-tagged.log` study file for every port.
 
+## Recover from a serial disconnect
+
+Each reader retries transient open and read failures without changing its logical identity. The original configured argument remains the `PortEvent.port`, panel name, and log-file identity; `via /dev/...` in a reconnect status is only the currently active kernel path. Reconnect attempts prefer the original path and otherwise require one exact USB descriptor match (VID, PID, serial number, and location when available). Ambiguous matches are not guessed.
+
+The retry interval defaults to one second and can be changed with `--reconnect-delay SECONDS`.
+
+```bash
+ls -l /dev/ttyACM* /dev/ttyUSB* /dev/serial/by-id/*
+uv run serial-terminal /dev/ttyACM0 /dev/ttyACM1 /dev/ttyACM2 --log-dir captures
+```
+
+To verify manually, start the monitor, reset or unplug one device, and rerun the `ls` command. Confirm `Reconnected ... via ...` appears and new lines continue in the same logical log file. No hardware test is claimed by this documentation.
+
 ## Keymap
 
 The keymap is rendered as a deterministic two-line bottom widget. The semantic
